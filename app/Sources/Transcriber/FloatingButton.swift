@@ -21,7 +21,7 @@ final class FloatingButton {
         let view = DotView(frame: NSRect(x: 0, y: 0, width: size, height: size))
         view.onClick = { [weak self] in self?.onClick?() }
         p.contentView = view
-        if let screen = NSScreen.main {
+        if let screen = NSScreen.main ?? NSScreen.screens.first {   // .main is nil with no key window
             let f = screen.visibleFrame
             p.setFrameOrigin(NSPoint(x: f.maxX - size - 8, y: f.midY))
         }

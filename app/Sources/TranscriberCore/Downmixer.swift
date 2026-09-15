@@ -12,8 +12,10 @@ public final class Downmixer {
     private let outFormat: AVAudioFormat
     private let converter: AVAudioConverter
     private let ratio: Double
+    private let log: Log
 
-    public init(inputRate: Double, inputChannels: Int) throws {
+    public init(inputRate: Double, inputChannels: Int, log: Log = .shared) throws {
+        self.log = log
         guard let inF = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: inputRate,
                                       channels: AVAudioChannelCount(inputChannels), interleaved: true),
               let outF = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Self.outputRate,
@@ -31,7 +33,7 @@ public final class Downmixer {
     public func process(interleaved: [Float], frames: Int) -> [Int16] {
         guard frames > 0 else { return [] }
         guard interleaved.count >= frames * Int(inFormat.channelCount) else {
-            Log.shared.error("downmix: short input — \(interleaved.count) floats for \(frames) frames × \(inFormat.channelCount)ch")
+            log.error("downmix: short input — \(interleaved.count) floats for \(frames) frames × \(inFormat.channelCount)ch")
             return []
         }
         guard let inBuf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: AVAudioFrameCount(frames))
@@ -65,7 +67,7 @@ public final class Downmixer {
             return input
         }
         if status == .error {
-            Log.shared.error("downmix: \(error?.localizedDescription ?? "unknown")")
+            log.error("downmix: \(error?.localizedDescription ?? "unknown")")
             return []
         }
         let n = Int(outBuf.frameLength)

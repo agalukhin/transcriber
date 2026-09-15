@@ -12,6 +12,12 @@ private func sine(freq: Double, rate: Double, seconds: Double, channels: Int, am
     return out
 }
 
+/// Keeps the suite out of ~/Library/Logs/transcriber-app.log.
+private func tempLog() -> Log {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    return Log(file: dir.appendingPathComponent("downmixer-test.log"))
+}
+
 private func zeroCrossings(_ x: [Int16]) -> Int {
     var count = 0
     for i in 1..<x.count where (x[i - 1] < 0) != (x[i] < 0) { count += 1 }
@@ -19,7 +25,7 @@ private func zeroCrossings(_ x: [Int16]) -> Int {
 }
 
 @Test func stereo48kToMono16kKeepsPitch() throws {
-    let d = try Downmixer(inputRate: 48_000, inputChannels: 2)
+    let d = try Downmixer(inputRate: 48_000, inputChannels: 2, log: tempLog())
     let input = sine(freq: 440, rate: 48_000, seconds: 1.0, channels: 2)
     var out: [Int16] = []
     // feed in 512-frame chunks like the IOProc does
@@ -38,7 +44,7 @@ private func zeroCrossings(_ x: [Int16]) -> Int {
 }
 
 @Test func mono44kToMono16k() throws {
-    let d = try Downmixer(inputRate: 44_100, inputChannels: 1)
+    let d = try Downmixer(inputRate: 44_100, inputChannels: 1, log: tempLog())
     let input = sine(freq: 1000, rate: 44_100, seconds: 0.5, channels: 1)
     let out = d.process(interleaved: input, frames: input.count) + d.finish()
     #expect(abs(out.count - 8_000) < 200)
@@ -46,6 +52,6 @@ private func zeroCrossings(_ x: [Int16]) -> Int {
 }
 
 @Test func shortInputIsDroppedNotRead() throws {
-    let d = try Downmixer(inputRate: 48_000, inputChannels: 2)
+    let d = try Downmixer(inputRate: 48_000, inputChannels: 2, log: tempLog())
     #expect(d.process(interleaved: [Float](repeating: 0.1, count: 100), frames: 512).isEmpty)
 }

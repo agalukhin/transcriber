@@ -17,14 +17,22 @@ if let i = CommandLine.arguments.firstIndex(of: "--record-test") {
     var micPeak: Float = 0
     var sysPeak: Float = 0
     try! cap.start { chunk in
-        if sysMixer == nil {
-            sysMixer = try? Downmixer(inputRate: cap.sampleRate, inputChannels: cap.sysChannels)
+        guard chunk.frames > 0 else { return }
+        // Each mixer is built on its own: one failing must not leave the other permanently nil.
+        if micMixer == nil {
             micMixer = try? Downmixer(inputRate: cap.sampleRate, inputChannels: max(chunk.mic.count / chunk.frames, 1))
+        }
+        if sysMixer == nil {
+            sysMixer = try? Downmixer(inputRate: cap.sampleRate, inputChannels: max(cap.sysChannels, 1))
+        }
+        guard let mm = micMixer, let sm = sysMixer else {
+            log.warn("record-test: downmixer unavailable (mic \(micMixer != nil), sys \(sysMixer != nil)), chunk skipped")
+            return
         }
         micPeak = max(micPeak, chunk.mic.map(abs).max() ?? 0)
         sysPeak = max(sysPeak, chunk.sys.map(abs).max() ?? 0)
-        mic.write(micMixer!.process(interleaved: chunk.mic, frames: chunk.frames))
-        sys.write(sysMixer!.process(interleaved: chunk.sys, frames: chunk.frames))
+        mic.write(mm.process(interleaved: chunk.mic, frames: chunk.frames))
+        sys.write(sm.process(interleaved: chunk.sys, frames: chunk.frames))
     }
     let say = Process()
     say.executableURL = URL(fileURLWithPath: "/usr/bin/say")

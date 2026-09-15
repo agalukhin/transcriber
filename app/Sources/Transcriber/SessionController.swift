@@ -11,7 +11,8 @@ import TranscriberCore
 /// are known only from the first chunk, so they are built inside `consume` itself — still on the
 /// capture queue, still the only accessor. `capture`, `micWriter` and `sysWriter` are assigned
 /// before `cap.start`, so the capture queue never observes them mutate once delivery begins;
-/// `stop()` touches them only after `capture.stop()`'s `queue.sync {}` barrier has returned.
+/// `stop()` and `checkHealth()` touch them only after `capture.stop()`'s `queue.sync {}` barrier
+/// has returned. `lastChunkAt` is the one field both threads write, so it carries its own lock.
 final class SessionController {
     enum State { case idle, recording(SessionDir) }
 
@@ -28,6 +29,13 @@ final class SessionController {
     private var sysWriter: PcmWriter?
     private var warnedNoMixer = false
     private let log = Log.shared
+    /// Written on the capture queue, read from the main thread by `checkHealth` — hence the lock.
+    private let chunkLock = NSLock()
+    private var lastChunkAtStorage = Date()
+    private var lastChunkAt: Date {
+        get { chunkLock.lock(); defer { chunkLock.unlock() }; return lastChunkAtStorage }
+        set { chunkLock.lock(); lastChunkAtStorage = newValue; chunkLock.unlock() }
+    }
 
     init(store: SessionStore = SessionStore(root: SessionStore.defaultRoot)) {
         self.store = store
@@ -51,6 +59,7 @@ final class SessionController {
             micMixer = nil   // both mixers are built on the first chunk, once channel counts are known
             sysMixer = nil
             warnedNoMixer = false
+            lastChunkAt = Date()
             let cap = TapCapture()
             capture = cap
             try cap.start { [weak self] chunk in self?.consume(chunk) }
@@ -82,6 +91,31 @@ final class SessionController {
         onStateChange?(state)
     }
 
+    /// Called from the AppDelegate tick and on wake. The tap dies silently when the aggregate
+    /// device is rebuilt under us (sleep, a device switch) — the IOProc simply stops firing,
+    /// so silence for longer than a few chunk intervals means the capture has to be rebuilt.
+    func checkHealth(now: Date) {
+        guard case .recording(let dir) = state else { return }
+        guard now.timeIntervalSince(lastChunkAt) > 5 else { return }
+        log.warn("capture stalled for session \(dir.id): no chunks for \(Int(now.timeIntervalSince(lastChunkAt)))s, restarting")
+        lastChunkAt = now   // also paces the retries if the restart below fails
+        capture?.stop()     // returns after the capture queue drains: mixers/writers are ours again
+        if let m = micMixer { micWriter?.write(m.finish()) }
+        if let s = sysMixer { sysWriter?.write(s.finish()) }
+        micMixer = nil      // rebuilt on the first chunk of the new capture, as at session start
+        sysMixer = nil
+        warnedNoMixer = false
+        let cap = TapCapture()
+        capture = cap
+        do {
+            try cap.start { [weak self] chunk in self?.consume(chunk) }
+            log.info("capture restarted for session \(dir.id)")
+        } catch {
+            capture = nil
+            log.error("capture restart failed for session \(dir.id): \(error)")
+        }
+    }
+
     private func cleanup() {
         capture = nil
         micWriter?.close()
@@ -110,6 +144,7 @@ final class SessionController {
     /// Runs on the capture queue — the only place the mixers and writers are touched while recording.
     private func consume(_ chunk: CaptureChunk) {
         guard chunk.frames > 0, let capture else { return }
+        lastChunkAt = Date()
         if micMixer == nil {
             let channels = max(chunk.mic.count / chunk.frames, 1)
             micMixer = try? Downmixer(inputRate: capture.sampleRate, inputChannels: channels)

@@ -18,11 +18,9 @@ final class PromptPanel {
         let label = NSTextField(wrappingLabelWithString: "В \(appName) началась встреча. Записать и завести заметку?")
         label.frame = NSRect(x: 20, y: 60, width: 320, height: 40)
         let record = NSButton(title: "Записать", target: nil, action: nil)
-        record.keyEquivalent = "\r"
         record.frame = NSRect(x: 230, y: 16, width: 110, height: 32)
         let skip = NSButton(title: "Не сейчас", target: nil, action: nil)
         skip.frame = NSRect(x: 110, y: 16, width: 110, height: 32)
-        record.setAccessibilityIdentifier("record")
         p.contentView?.addSubview(label)
         p.contentView?.addSubview(record)
         p.contentView?.addSubview(skip)
@@ -41,7 +39,10 @@ final class PromptPanel {
         }
         p.orderFrontRegardless()
         panel = p
-        timer = Timer.scheduledTimer(withTimeInterval: 90, repeats: false) { [weak self] _ in self?.dismiss(); onSkip() }
+        // .common, so an open menu or a window resize does not stall the auto-dismiss
+        let t = Timer(timeInterval: 90, repeats: false) { [weak self] _ in self?.dismiss(); onSkip() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     func dismiss() {
