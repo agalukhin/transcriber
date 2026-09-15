@@ -10,7 +10,8 @@ PROMPT_MAX = 600  # chars; whisper keeps ~224 tokens of prompt
 def clean_text(text: str, hallucinations: list[str]) -> str:
     out = text
     for h in hallucinations:
-        out = re.sub(re.escape(h) + r"[.…!]*", "", out, flags=re.IGNORECASE)
+        out = re.sub(re.escape(h) + r"[\s.…!,;:—-]*", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s*[,;:]\s*(?=[,;:.]|$)", "", out)
     return re.sub(r"\s+", " ", out).strip()
 
 
@@ -20,7 +21,7 @@ def build_prompt(participants: list[str], glossary: list[str]) -> str:
     if glossary:
         parts.append(f"Термины: {', '.join(glossary)}.")
     prompt = " ".join(parts)
-    return prompt if len(prompt) <= PROMPT_MAX else prompt[:PROMPT_MAX].rsplit(",", 1)[0] + "."
+    return prompt if len(prompt) <= PROMPT_MAX else prompt[:PROMPT_MAX - 1].rsplit(",", 1)[0] + "."
 
 
 class Transcriber:

@@ -6,27 +6,32 @@ from pathlib import Path
 from .config import Config
 from .session import Meta, Rec, Session, atomic_write_text
 
-APP_NAMES = {"kontur.talk": "Толк", "zoom.us": "Zoom"}
+APPS: dict[str, tuple[str, str]] = {"kontur.talk": ("Толк", "Толке"), "zoom.us": ("Zoom", "Zoom")}
+
+TITLE_CAP = 120
 
 
 def app_label(app: str) -> str:
-    return APP_NAMES.get(app, "")
+    pair = APPS.get(app)
+    return pair[0] if pair else ""
 
 
-APP_LOCATIVE = {"kontur.talk": "Толке", "zoom.us": "Zoom"}
+def app_locative(app: str) -> str:
+    pair = APPS.get(app)
+    return pair[1] if pair else ""
 
 
 def default_title(meta: Meta) -> str:
-    name = APP_LOCATIVE.get(meta.app)
+    name = app_locative(meta.app)
     return f"Встреча в {name}" if name else "Встреча"
-
-
-def title_of(meta: Meta) -> str:
-    return meta.title.strip() or default_title(meta)
 
 
 def clean_title(title: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[/\\:|#^\[\]]", " ", title)).strip()
+
+
+def title_of(meta: Meta) -> str:
+    return meta.title.strip() if clean_title(meta.title) else default_title(meta)
 
 
 def slug(title: str) -> str:
@@ -39,12 +44,12 @@ def stamp(meta: Meta) -> tuple[str, str]:
 
 def raw_filename(meta: Meta) -> str:
     date, hhmm = stamp(meta)
-    return f"Local-{date}-{hhmm}-{slug(title_of(meta))}.md"
+    return f"Local-{date}-{hhmm}-{slug(title_of(meta))[:TITLE_CAP]}.md"
 
 
 def note_filename(meta: Meta) -> str:
     date, hhmm = stamp(meta)
-    return f"MTG-{date} {hhmm} · {clean_title(title_of(meta))}.md"
+    return f"MTG-{date} {hhmm} · {clean_title(title_of(meta))[:TITLE_CAP]}.md"
 
 
 def mmss(seconds: float) -> str:

@@ -52,3 +52,21 @@ def test_write_raw_and_stub(vault):
     assert "## Мысли Владислава\n" in body and "<!-- дистиллят: ожидает дейли-рутин -->" in body
     n.write_text(body + "\nмоя мысль\n")
     assert ensure_stub(cfg, s) == n and "моя мысль" in n.read_text()   # never overwritten
+
+
+def test_title_of_falls_back_when_title_is_only_separators():
+    assert raw_filename(meta(title="///")) == raw_filename(meta(title=""))
+
+
+def test_filename_title_length_is_capped():
+    long_title = "А" * 200
+    assert len(raw_filename(meta(title=long_title))) < 150
+    assert len(note_filename(meta(title=long_title))) < 150
+
+
+def test_app_label_and_locative_share_one_source():
+    from transcriber.vault import app_label, app_locative
+
+    assert app_label("kontur.talk") == "Толк"
+    assert app_locative("kontur.talk") == "Толке"
+    assert app_label("unknown") == "" and app_locative("unknown") == ""

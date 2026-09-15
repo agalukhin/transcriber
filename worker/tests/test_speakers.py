@@ -30,3 +30,24 @@ def test_recluster_relabels_by_first_appearance():
 def test_recluster_trivial_sizes():
     assert recluster(np.zeros((0, 4), dtype=np.float32), 0.5) == []
     assert recluster(np.array([[1, 0]], dtype=np.float32), 0.5) == [0]
+
+
+def test_recluster_masks_nonfinite_and_zero_rows():
+    embs = np.array(
+        [[1, 0], [float("nan"), float("nan")], [1, 0], [0, 1], [0, 0]],
+        dtype=np.float32,
+    )
+    assert recluster(embs, similarity=0.5) == [0, 0, 0, 1, 1]
+
+
+def test_online_assign_handles_nonfinite_embedding():
+    c = OnlineClusterer(similarity=0.5)
+    assert c.assign(v(1, 0)) == 0
+    assert c.assign(v(float("nan"), float("nan"))) == 0
+    assert c.n_speakers == 1
+    assert c.assign(v(1, 0)) == 0
+
+
+def test_online_restore_from_history_contiguous_labels():
+    c = OnlineClusterer.from_history(similarity=0.5, embeddings=[[1, 0], [0, 1], [1, 0]], labels=[0, 1, 0])
+    assert c.n_speakers == 2
