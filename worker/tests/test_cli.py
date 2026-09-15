@@ -436,3 +436,76 @@ def test_refinalize_puts_learned_names_into_the_raw(vault, tmp_path):
     assert "Ярослав Серов: Давайте обсудим контракт" in text
     assert "Опознаны по голосу: Ярослав Серов" in text
     assert json.loads((d / "state.json").read_text())["speaker_names"] == {"0": "Ярослав Серов"}
+
+
+# ---- голосовые профили: forget -----------------------------------------------
+
+
+def _learned(vault, tmp_path, monkeypatch):
+    """Профиль «Ярослав Серов» из двух источников: Speaker 1 — 3 отпечатка, Speaker 2 — 2."""
+    cfg, _d = _refinalized(vault, tmp_path)
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    cli.main(["learn", "2026-09-15-1430", "Speaker 1=Ярослав Серов", "Speaker 2=Ярослав Серов"])
+    return cfg
+
+
+def test_voices_command_shows_counts_per_source(vault, tmp_path, capsys, monkeypatch):
+    cfg = _learned(vault, tmp_path, monkeypatch)
+    capsys.readouterr()
+    cli.main(["voices"])
+    out = capsys.readouterr().out
+    assert "2026-09-15-1430:Speaker 1 — 3" in out and "2026-09-15-1430:Speaker 2 — 2" in out
+
+
+def test_forget_command_deletes_the_whole_profile(vault, tmp_path, capsys, monkeypatch):
+    cfg = _learned(vault, tmp_path, monkeypatch)
+    capsys.readouterr()
+    cli.main(["forget", "Ярослав Серов"])
+    assert "Профиль Ярослав Серов удалён" in capsys.readouterr().out
+    assert VoiceLibrary(cfg.voices_dir).names() == []
+    assert not VoiceLibrary(cfg.voices_dir).path_of("Ярослав Серов").exists()
+
+
+def test_forget_source_command_reports_what_it_took_off(vault, tmp_path, capsys, monkeypatch):
+    cfg = _learned(vault, tmp_path, monkeypatch)
+    capsys.readouterr()
+    cli.main(["forget", "Ярослав Серов", "--source", "2026-09-15-1430:Speaker 1"])
+    out = capsys.readouterr().out
+    assert "снято 3" in out and "2026-09-15-1430:Speaker 1" in out and "осталось 2" in out
+    prof = VoiceLibrary(cfg.voices_dir).get("Ярослав Серов")
+    assert prof.count == 2 and prof.sources == ["2026-09-15-1430:Speaker 2"]
+
+    cli.main(["forget", "Ярослав Серов", "--source", "2026-09-15-1430:Speaker 2"])
+    out = capsys.readouterr().out
+    assert "снято 2" in out and "осталось 0" in out and "удалён" in out
+    assert VoiceLibrary(cfg.voices_dir).names() == []
+
+
+def test_forget_command_on_an_unknown_name_exits_1(vault, tmp_path, capsys, monkeypatch):
+    import pytest
+
+    cfg = _learned(vault, tmp_path, monkeypatch)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        cli.main(["forget", "Кого не учили"])
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "Кого не учили" in err and "Ярослав Серов" in err        # подсказали, кто в библиотеке есть
+    with pytest.raises(SystemExit) as e:
+        cli.main(["forget", "Кого не учили", "--source", "2026-09-15-1430:Speaker 1"])
+    assert e.value.code == 1
+    assert VoiceLibrary(cfg.voices_dir).get("Ярослав Серов").count == 5    # чужой профиль не тронут
+
+
+def test_forget_source_counts_samples_whose_source_is_unknown(vault, tmp_path, capsys, monkeypatch):
+    """Профиль старого формата: отпечатки без src по источнику не снимаются — об этом говорим вслух."""
+    cfg = _learned(vault, tmp_path, monkeypatch)
+    path = VoiceLibrary(cfg.voices_dir).path_of("Ярослав Серов")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["samples"] = [s["v"] for s in data["samples"][:3]] + data["samples"][3:]   # первые три — по-старому
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    capsys.readouterr()
+    cli.main(["forget", "Ярослав Серов", "--source", "2026-09-15-1430:Speaker 2"])
+    out = capsys.readouterr().out
+    assert "снято 2" in out and "осталось 3" in out
+    assert "3" in out and "источник неизвестен" in out

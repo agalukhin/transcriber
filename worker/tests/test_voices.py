@@ -78,8 +78,8 @@ def test_samples_are_capped_at_50_most_recent_but_count_keeps_growing(tmp_path):
     L.add("Дарья", [v(1, 0, 0)] * 40, source="a:Speaker 1")
     prof = L.add("Дарья", [v(0, 1, 0)] * 20, source="b:Speaker 1")
     assert prof.count == 60 and len(prof.samples) == 50
-    assert prof.samples[-1] == pytest.approx(v(0, 1, 0))
-    assert prof.samples[:30] == [pytest.approx(v(1, 0, 0))] * 30    # свежие вытеснили самые старые
+    assert prof.samples[-1].v == pytest.approx(v(0, 1, 0))
+    assert [s.v for s in prof.samples[:30]] == [pytest.approx(v(1, 0, 0))] * 30   # свежие вытеснили старые
     assert json.loads((tmp_path / "voices" / "Дарья.json").read_text(encoding="utf-8"))["count"] == 60
 
 
@@ -113,3 +113,101 @@ def test_a_broken_json_file_does_not_break_the_library(tmp_path):
     (tmp_path / "voices" / "мусор.json").write_text("{ это не json", encoding="utf-8")
     fresh = lib(tmp_path)
     assert fresh.names() == ["Дарья"] and fresh.match(v(1, 0, 0)) is not None
+
+
+# ---- источник у каждого отпечатка -------------------------------------------
+
+
+LEGACY = {"name": "Ярослав Серов", "count": 2, "centroid": unit(1, 1, 0),
+          "samples": [v(1, 0, 0), v(0, 1, 0)],            # старый формат: плоские векторы без источника
+          "sources": ["2026-09-15-1622:Speaker 2"]}
+
+
+def write_legacy(tmp_path, data: dict = None) -> None:
+    d = tmp_path / "voices"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "Ярослав Серов.json").write_text(json.dumps(data or LEGACY, ensure_ascii=False), encoding="utf-8")
+
+
+def test_each_sample_carries_its_source_on_disk(tmp_path):
+    L = lib(tmp_path)
+    L.add("Дарья", [v(1, 0, 0), v(0, 1, 0)], source="a:Speaker 1")
+    L.add("Дарья", [v(0, 0, 1)], source="b:Speaker 3")
+    data = json.loads((tmp_path / "voices" / "Дарья.json").read_text(encoding="utf-8"))
+    assert [s["src"] for s in data["samples"]] == ["a:Speaker 1", "a:Speaker 1", "b:Speaker 3"]
+    assert data["samples"][0]["v"] == pytest.approx(v(1, 0, 0))
+    assert lib(tmp_path).get("Дарья").by_source() == {"a:Speaker 1": 2, "b:Speaker 3": 1}
+
+
+def test_forget_deletes_the_whole_profile(tmp_path):
+    L = lib(tmp_path)
+    L.add("Дарья", [v(1, 0, 0)], source="a:Speaker 1")
+    L.add("Арсений", [v(0, 1, 0)], source="a:Speaker 2")
+    assert L.forget("Дарья") is True
+    assert L.forget("Дарья") is False                     # второй раз забывать нечего
+    assert L.forget("Кого не учили") is False
+    assert not (tmp_path / "voices" / "Дарья.json").exists()
+    assert L.names() == ["Арсений"] and lib(tmp_path).names() == ["Арсений"]
+
+
+def test_forget_source_drops_its_samples_and_recomputes_the_centroid(tmp_path):
+    L = lib(tmp_path)
+    L.add("Дарья", [v(1, 0, 0), v(1, 0, 0)], source="a:Speaker 1")
+    L.add("Дарья", [v(0, 1, 0)], source="b:Speaker 2")
+    assert L.get("Дарья").centroid == pytest.approx(unit(2, 1, 0), abs=1e-6)
+    assert L.forget_source("Дарья", "a:Speaker 1") == 2
+    prof = lib(tmp_path).get("Дарья")                     # перечитано с диска
+    assert prof.count == 1 and len(prof.samples) == 1
+    assert prof.sources == ["b:Speaker 2"]
+    assert prof.centroid == pytest.approx(unit(0, 1, 0), abs=1e-6)
+    assert prof.by_source() == {"b:Speaker 2": 1}
+
+
+def test_forget_source_deletes_the_profile_when_nothing_is_left(tmp_path):
+    L = lib(tmp_path)
+    L.add("Ярослав Серов", [v(1, 0, 0)] * 3, source="2026-09-15-1622:Speaker 2")
+    assert L.forget_source("Ярослав Серов", "2026-09-15-1622:Speaker 2") == 3
+    assert not (tmp_path / "voices" / "Ярослав Серов.json").exists()
+    assert L.names() == [] and lib(tmp_path).names() == []
+
+
+def test_forget_source_of_an_unknown_name_or_source_changes_nothing(tmp_path):
+    L = lib(tmp_path)
+    L.add("Дарья", [v(1, 0, 0)], source="a:Speaker 1")
+    assert L.forget_source("Кого не учили", "a:Speaker 1") == 0
+    assert L.forget_source("Дарья", "b:Speaker 7") == 0
+    prof = lib(tmp_path).get("Дарья")
+    assert prof.count == 1 and prof.sources == ["a:Speaker 1"] and len(prof.samples) == 1
+
+
+def test_legacy_flat_samples_load_as_unknown_source_and_are_resaved(tmp_path):
+    write_legacy(tmp_path)
+    L = lib(tmp_path)
+    prof = L.get("Ярослав Серов")
+    assert prof.count == 2 and prof.sources == ["2026-09-15-1622:Speaker 2"]
+    assert [s.src for s in prof.samples] == [None, None]
+    assert [s.v for s in prof.samples] == [pytest.approx(v(1, 0, 0)), pytest.approx(v(0, 1, 0))]
+    assert prof.by_source() == {"2026-09-15-1622:Speaker 2": 0, None: 2}
+    hit = L.match(v(1, 1, 0))
+    assert hit is not None and hit[0] == "Ярослав Серов"       # старый профиль опознаёт как опознавал
+
+    L.add("Ярослав Серов", [v(0, 0, 1)], source="новая:Speaker 1")     # ближайшая запись — уже новым форматом
+    data = json.loads((tmp_path / "voices" / "Ярослав Серов.json").read_text(encoding="utf-8"))
+    assert [s["src"] for s in data["samples"]] == [None, None, "новая:Speaker 1"]
+    assert data["samples"][0]["v"] == pytest.approx(v(1, 0, 0))
+    assert data["count"] == 3
+
+
+def test_samples_without_a_source_survive_forget_source(tmp_path):
+    write_legacy(tmp_path)
+    L = lib(tmp_path)
+    L.add("Ярослав Серов", [v(0, 0, 1)], source="новая:Speaker 1")
+    assert L.forget_source("Ярослав Серов", "новая:Speaker 1") == 1
+    prof = lib(tmp_path).get("Ярослав Серов")
+    assert prof.count == 2 and [s.src for s in prof.samples] == [None, None]
+    assert prof.sources == ["2026-09-15-1622:Speaker 2"]
+    assert prof.centroid == pytest.approx(unit(1, 1, 0), abs=1e-6)
+
+    assert L.forget_source("Ярослав Серов", "2026-09-15-1622:Speaker 2") == 0   # без src так не снять
+    assert lib(tmp_path).get("Ярослав Серов").count == 2
+    assert L.forget("Ярослав Серов") is True                                    # только целиком

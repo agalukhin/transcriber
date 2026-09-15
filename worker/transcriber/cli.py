@@ -16,7 +16,12 @@
   или уже проставленное имя. Вместо пар можно указать ``--from-note ПУТЬ`` — ключ
   ``speakers:`` из фронт-маттера MTG-заметки. После ``learn`` полезен ``refinalize``:
   он переподпишет реплики именами;
-* ``transcriber voices`` — что накоплено в библиотеке голосов: имя, число отпечатков, источники.
+* ``transcriber voices`` — что накоплено в библиотеке голосов: имя, число отпечатков,
+  источники и сколько отпечатков принёс каждый;
+* ``transcriber forget "Ярослав Серов"`` — снести профиль целиком;
+  ``transcriber forget "Ярослав Серов" --source 2026-09-15-1622:Speaker 2`` — снять только
+  отпечатки одной метки одной сессии, когда ``learn`` отдал кластер не тому человеку.
+  Отпечатки профилей старого формата (без источника) снимаются только вместе с профилем.
 """
 
 from __future__ import annotations
@@ -43,7 +48,7 @@ from .quality import junk_reason, prompt_vocabulary
 from .speakers import label
 from .session import Session, State
 from .vault import write_raw
-from .voices import VoiceLibrary
+from .voices import VoiceLibrary, VoiceProfile
 
 log = logging.getLogger("transcriber")
 
@@ -217,6 +222,15 @@ def learn(cfg: Config, session_id: str, mapping: dict[str, str]) -> list[tuple[s
     return out
 
 
+UNKNOWN_SOURCE = "источник неизвестен"
+
+
+def sources_line(prof: VoiceProfile) -> str:
+    """«2026-09-15-1622:Speaker 2 — 30 · источник неизвестен — 5»."""
+    parts = [f"{src or UNKNOWN_SOURCE} — {n}" for src, n in prof.by_source().items()]
+    return " · ".join(parts) or "источник не указан"
+
+
 def show_voices(cfg: Config) -> None:
     lib = VoiceLibrary(cfg.voices_dir, cfg.voice_match_similarity)
     names = lib.names()
@@ -226,8 +240,33 @@ def show_voices(cfg: Config) -> None:
     print(f"Библиотека голосов ({cfg.voices_dir}), порог {cfg.voice_match_similarity}:")
     for name in names:
         prof = lib.get(name)
-        print(f"  {name}: {prof.count} отпечатков ({len(prof.samples)} хранится) · "
-              f"{', '.join(prof.sources) or 'источник не указан'}")
+        print(f"  {name}: {prof.count} отпечатков ({len(prof.samples)} хранится) · {sources_line(prof)}")
+
+
+def forget(cfg: Config, name: str, source: str | None = None) -> None:
+    """Убрать из библиотеки профиль целиком или отпечатки одного источника.
+
+    Неизвестное имя — ошибка (``LookupError``): молча удалить не то имя хуже, чем переспросить.
+    """
+    lib = VoiceLibrary(cfg.voices_dir, cfg.voice_match_similarity)
+    prof = lib.get(name)
+    if prof is None:
+        raise LookupError(f"{name}: такого профиля в библиотеке нет; есть {', '.join(lib.names()) or '—'}")
+    if source is None:
+        lib.forget(name)
+        print(f"Профиль {name} удалён")
+        return
+    unknown = prof.by_source().get(None, 0)          # считаем до правки: forget_source меняет профиль на месте
+    removed = lib.forget_source(name, source)
+    if not removed:
+        print(f"{name}: отпечатков из {source} в профиле нет · {sources_line(prof)}")
+    else:
+        rest = lib.get(name)
+        left = f"осталось {len(rest.samples)}" if rest else "осталось 0 → профиль удалён"
+        print(f"{name}: снято {removed} отпечатков из {source}, {left}")
+    if unknown and lib.get(name) is not None:
+        print(f"  у {unknown} отпечатков {UNKNOWN_SOURCE} (профиль записан старым форматом) — "
+              f"по источнику их не снять, только forget без --source")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -251,6 +290,10 @@ def main(argv: list[str] | None = None) -> None:
     ln.add_argument("pairs", nargs="*", metavar="SPEAKER=NAME")
     ln.add_argument("--from-note", metavar="PATH", help="взять карту из ключа speakers: фронт-маттера MTG-заметки")
     sub.add_parser("voices", help="list the voice library")
+    fg = sub.add_parser("forget", help='forget a voice: forget "Ярослав Серов" [--source SESSION:LABEL]')
+    fg.add_argument("name", metavar="NAME")
+    fg.add_argument("--source", metavar="SESSION:LABEL",
+                    help="снять только отпечатки этой метки этой сессии, а не весь профиль")
     args = ap.parse_args(argv)
     cfg = load_config()
     if args.cmd == "run":
@@ -287,6 +330,12 @@ def main(argv: list[str] | None = None) -> None:
         print("готово; чтобы имена попали в Raw — transcriber refinalize " + args.session_id)
     elif args.cmd == "voices":
         show_voices(cfg)
+    elif args.cmd == "forget":
+        try:
+            forget(cfg, args.name, args.source)
+        except LookupError as e:
+            print(e, file=sys.stderr)
+            raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
