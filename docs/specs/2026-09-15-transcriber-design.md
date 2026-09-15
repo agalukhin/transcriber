@@ -57,9 +57,13 @@
 - **Состояние.** `session.json` хранит смещения обеих дорожек, все отпечатки с метками и статус. Любой перезапуск, сон или падение продолжают с сохранённого места. Аудио удаляется только после того, как финальный Raw записан; опция `keep_audio` в конфиге оставляет его.
 - **Оффлайн-режим.** `worker --from-wav mic.wav sys.wav` создаёт сессию из готовых файлов и гоняет тот же конвейер. Это и тестовый стенд, и способ транскрибировать любую запись.
 
-### Формат `session.json`
+### Файлы сессии
 
-Пишет Swift, дополняет воркер. Поля: `id`, `started_at`, `app` (`kontur.talk` / `zoom.us` / `manual`), `title`, `participants`, `status` (`recording` → `stopped` → `finalized`), `raw_path`, `note_path`, `mic_offset`, `sys_offset`, `speakers` (отпечатки и метки), `errors`.
+Два владельца, два файла, чтобы процессы никогда не писали в один файл.
+
+- `meta.json` — пишет Swift один раз при старте: `id`, `started_at` (ISO с таймзоной), `app` (`kontur.talk` / `zoom.us` / `manual`), `title`, `participants`.
+- `state.json` — пишет только воркер: `status` (`recording` → `finalized`), `mic_offset`, `sys_offset` (сэмплы, докуда распознано), `raw_path`, `note_path`, `records` (фразы с текстом и метками), `pending_mic` (фразы микрофона, ждущие проверки на эхо), `embeddings`, `speaker_of_emb`, `errors`.
+- `STOP` — пустой файл-маркер, Swift создаёт его, когда запись остановлена. Воркер, увидев его, дожёвывает хвост и финализирует.
 
 ## Файлы в вольте
 
