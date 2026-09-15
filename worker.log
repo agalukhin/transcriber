@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/slesarev_vv/Claude/transcriber/worker/.venv/bin/transcriber", line 4, in <module>
+    from transcriber.cli import main
+ModuleNotFoundError: No module named 'transcriber'
