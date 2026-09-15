@@ -7,3 +7,6 @@ __pycache__/
 *.wav
 .DS_Store
 worker.log
+
+app/.build/
+build/
