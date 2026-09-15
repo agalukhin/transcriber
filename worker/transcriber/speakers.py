@@ -67,6 +67,46 @@ class OnlineClusterer:
         return self.last
 
 
+def _relabel(labels: list[int]) -> list[int]:
+    """Renumber cluster ids 0..k-1 in order of first appearance."""
+    order: dict[int, int] = {}
+    return [order.setdefault(int(l), len(order)) for l in labels]
+
+
+def absorb_small_clusters(labels: list[int], embeddings, min_size: int = 2,
+                          min_similarity: float = 0.1) -> list[int]:
+    """Merge clusters below ``min_size`` into the nearest normal-sized one by centroid cosine.
+
+    Single-utterance clusters are almost always whisper junk or a badly cut segment, not a person:
+    on the first real meeting they were a hallucinated English line and a stretch of «Аааа...».
+    A tiny cluster is kept as its own speaker when even the nearest centroid is below
+    ``min_similarity``, and when there is no cluster of ``min_size`` or more to merge into.
+    Result is relabelled by first appearance.
+    """
+    labels = [int(l) for l in labels]
+    arr = np.asarray(embeddings, dtype=np.float64)
+    if not labels or len(arr) != len(labels):
+        return _relabel(labels)
+    counts: dict[int, int] = {}
+    for l in labels:
+        counts[l] = counts.get(l, 0) + 1
+    big = [l for l in counts if counts[l] >= min_size]
+    if not big:
+        return _relabel(labels)
+    centroids = {l: _unit(np.sum([_unit(arr[i]) for i, x in enumerate(labels) if x == l], axis=0))
+                 for l in counts}
+    mapping: dict[int, int] = {}
+    for l in counts:
+        if counts[l] >= min_size:
+            mapping[l] = l
+            continue
+        sims = [(float(np.dot(centroids[l], centroids[b])), b) for b in big]
+        sims = [(s if np.isfinite(s) else -1.0, b) for s, b in sims]
+        best_sim, best = max(sims)
+        mapping[l] = best if best_sim >= min_similarity else l
+    return _relabel([mapping[l] for l in labels])
+
+
 def recluster(embeddings: np.ndarray, similarity: float) -> list[int]:
     """Average-linkage agglomerative clustering on cosine distance; labels ordered by first appearance.
 
@@ -93,8 +133,7 @@ def recluster(embeddings: np.ndarray, similarity: float) -> list[int]:
         x = np.stack([_unit(embeddings[i]) for i in valid_idx])
         z = linkage(x, method="average", metric="cosine")
         raw = fcluster(z, t=1.0 - similarity, criterion="distance")
-        order: dict[int, int] = {}
-        valid_labels = [order.setdefault(int(c), len(order)) for c in raw]
+        valid_labels = _relabel([int(c) for c in raw])
 
     labels = [0] * n
     last = 0

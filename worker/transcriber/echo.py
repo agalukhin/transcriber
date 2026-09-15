@@ -22,11 +22,18 @@ def overlap_fraction(m: Rec, others: list[Rec]) -> float:
     return min(1.0, total / dur)
 
 
-def is_echo(m: Rec, others: list[Rec], overlap: float, sim: float) -> bool:
-    """A mic utterance is an echo of the speakers if it overlaps sys speech and says the same thing."""
+def is_echo(m: Rec, others: list[Rec], overlap: float, sim: float, strong: float = 0.8) -> bool:
+    """A mic utterance is an echo of the speakers if it overlaps sys speech and says the same thing.
+
+    Two rules, either of them is enough:
+    * ``overlap`` of the mic utterance is covered by sys speech **and** the texts are ``sim``-close;
+    * the texts are ``strong``-close and there is any time overlap at all — the mic side of an echo
+      is often segmented into one long utterance around a short sys one, which sinks the coverage.
+    """
     if not m.text:
         return False
     touching = [o for o in others if o.text and min(m.end, o.end) - max(m.start, o.start) > 0]
-    if overlap_fraction(m, touching) < overlap:
+    if not touching:
         return False
-    return max((similarity(m.text, o.text) for o in touching), default=0.0) >= sim
+    best = max(similarity(m.text, o.text) for o in touching)
+    return (overlap_fraction(m, touching) >= overlap and best >= sim) or best >= strong

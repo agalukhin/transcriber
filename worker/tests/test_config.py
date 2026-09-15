@@ -41,3 +41,20 @@ def test_root_can_be_overridden_by_env(tmp_path, monkeypatch):
     finally:
         monkeypatch.delenv("TRANSCRIBER_ROOT")
         importlib.reload(config_module)
+
+
+def test_clustering_and_echo_defaults_match_tuned_values(tmp_path):
+    cfg = load_config(yaml_path=tmp_path / "missing.yaml", glossary_path=tmp_path / "missing.txt")
+    assert cfg.speaker_similarity == 0.3     # 0.5 давал 11 «спикеров» на созвон вчетвером
+    assert cfg.min_embed_s == 1.0
+    assert cfg.echo_strong_similarity == 0.8
+
+
+def test_shipped_yaml_matches_tuned_defaults():
+    import yaml as _yaml
+
+    from transcriber.config import ROOT
+
+    data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
+    assert data["speaker_similarity"] == 0.3
+    assert data["echo_strong_similarity"] == 0.8

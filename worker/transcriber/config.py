@@ -27,9 +27,10 @@ class Config:
     max_utterance_s: float = 30.0
     read_chunk_s: float = 30.0      # сколько аудио за один step(), чтобы бэклог не влезал в RAM целиком
     min_embed_s: float = 1.0
-    speaker_similarity: float = 0.5
+    speaker_similarity: float = 0.3
     echo_overlap: float = 0.8
     echo_similarity: float = 0.6
+    echo_strong_similarity: float = 0.8   # дословный повтор — эхо даже при коротком перекрытии
     echo_wait_s: float = 1.0
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM"
