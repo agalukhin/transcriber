@@ -9,6 +9,24 @@ OUT="$ROOT/build/Transcriber.app"
 DEST="$HOME/Applications/Transcriber.app"
 LABEL=ru.slesarev.transcriber.app
 IDENTITY="Transcriber Dev"
+SESSIONS="$HOME/Claude/transcriber/sessions"
+FORCE=0
+for arg in "$@"; do
+  if [ "$arg" = "--force" ]; then FORCE=1; fi
+done
+
+# Reinstalling kills the running app: a session that has no STOP yet (and has not been finalized)
+# would lose its tail and leave the worker waiting forever.
+if [ "$FORCE" -eq 0 ] && [ -d "$SESSIONS" ]; then
+  for meta in "$SESSIONS"/*/meta.json; do
+    [ -e "$meta" ] || continue
+    dir="$(dirname "$meta")"
+    [ -e "$dir/STOP" ] && continue
+    if [ -f "$dir/state.json" ] && grep -q '"status"[[:space:]]*:[[:space:]]*"finalized"' "$dir/state.json"; then continue; fi
+    echo "$(basename "$dir"): recording in progress; rerun with --force" >&2
+    exit 1
+  done
+fi
 
 (cd "$APP_SRC" && swift build -c release --product Transcriber 2>&1 | grep -E "error|Build complete" || true)
 BIN="$APP_SRC/.build/release/Transcriber"

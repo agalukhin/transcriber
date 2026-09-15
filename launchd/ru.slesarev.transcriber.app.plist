@@ -6,7 +6,9 @@
   <key>ProgramArguments</key>
   <array><string>/Users/slesarev_vv/Applications/Transcriber.app/Contents/MacOS/Transcriber</string></array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <!-- «Выход» из меню (exit 0) должен оставаться выходом; перезапускаем только после падения -->
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Interactive</string>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>StandardOutPath</key><string>/Users/slesarev_vv/Library/Logs/transcriber-app.stdout.log</string>
