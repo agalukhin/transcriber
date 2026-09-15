@@ -10,7 +10,13 @@
 * ``transcriber retranscribe SESSION_ID`` — полный повторный прогон сессии по сохранённому
   ``mic.pcm``/``sys.pcm``: state сбрасывается (Raw и MTG остаются на своих путях) и вся
   дорожка проходит ASR заново с текущим конфигом. Нужна при ``keep_audio: true``, когда
-  поменялись промпт, модель или пороги сегментации.
+  поменялись промпт, модель или пороги сегментации;
+* ``transcriber learn SESSION_ID "Speaker 2=Ярослав Серов" …`` — положить отпечатки голоса
+  кластера в библиотеку под именем человека. Метка берётся из финального Raw: ``Speaker N``
+  или уже проставленное имя. Вместо пар можно указать ``--from-note ПУТЬ`` — ключ
+  ``speakers:`` из фронт-маттера MTG-заметки. После ``learn`` полезен ``refinalize``:
+  он переподпишет реплики именами;
+* ``transcriber voices`` — что накоплено в библиотеке голосов: имя, число отпечатков, источники.
 """
 
 from __future__ import annotations
@@ -19,12 +25,14 @@ import argparse
 import json
 import logging
 import math
+import re
 import sys
 import wave
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from .config import Config, load_config
 from .daemon import Daemon
@@ -32,8 +40,10 @@ from .echo import is_echo
 from .models import Models, load_models
 from .pipeline import Pipeline, recluster_records
 from .quality import junk_reason, prompt_vocabulary
-from .session import Session
+from .speakers import label
+from .session import Session, State
 from .vault import write_raw
+from .voices import VoiceLibrary
 
 log = logging.getLogger("transcriber")
 
@@ -139,6 +149,87 @@ def retranscribe(cfg: Config, session_id: str, models: Models | None = None) -> 
     return Path(pipe.s.state.raw_path)
 
 
+SPEAKER_LABEL = re.compile(r"Speaker\s+(\d+)$")
+
+
+def parse_pair(text: str) -> tuple[str, str]:
+    """«Speaker 2=Ярослав Серов» → («Speaker 2», «Ярослав Серов»)."""
+    label, sep, name = text.partition("=")
+    if not sep or not label.strip() or not name.strip():
+        raise ValueError(f'{text!r}: нужна пара вида "Speaker 2=Ярослав Серов" — со знаком =')
+    return label.strip(), name.strip()
+
+
+def speakers_from_note(path: Path) -> dict[str, str]:
+    """Ключ ``speakers:`` из фронт-маттера MTG-заметки: {«Speaker 2»: «Ярослав Серов»}."""
+    text = Path(path).read_text(encoding="utf-8")
+    parts = text.split("---", 2)
+    if not text.lstrip().startswith("---") or len(parts) < 3:
+        raise ValueError(f"{path}: нет фронт-маттера")
+    block = parts[1]
+    try:
+        data = yaml.safe_load(block) or {}
+    except yaml.YAMLError:
+        # чужие ключи заметки могут не пережить safe_load — нам нужна ровно одна строка
+        line = next((x for x in block.splitlines() if x.startswith("speakers:")), "")
+        data = yaml.safe_load(line) if line else {}
+    speakers = (data or {}).get("speakers")
+    if not isinstance(speakers, dict) or not speakers:
+        raise ValueError(f"{path}: во фронт-маттере нет ключа speakers с парами «Speaker N: Имя»")
+    return {str(k).strip(): str(v).strip() for k, v in speakers.items()}
+
+
+def cluster_of_label(st: State, text: str) -> int | None:
+    """Метка из финального Raw в индекс кластера: «Speaker N» → N-1, имя → его кластер."""
+    m = SPEAKER_LABEL.match(text)
+    if m:
+        return int(m.group(1)) - 1
+    for key, name in st.speaker_names.items():
+        if name == text:
+            return int(key)
+    return None
+
+
+def learn(cfg: Config, session_id: str, mapping: dict[str, str]) -> list[tuple[str, str, int]]:
+    """Отпечатки названных кластеров сессии — в библиотеку голосов.
+
+    Сверка идёт по всей карте до первой записи: половина применённого сопоставления хуже,
+    чем понятная ошибка и повтор команды целиком.
+    """
+    if not mapping:
+        raise ValueError("нечего учить: не задана ни одна пара «Speaker N=Имя»")
+    st = Session.load(cfg.sessions_dir / session_id).state
+    known = sorted({label(c) for c in st.speaker_of_emb} | set(st.speaker_names.values()))
+    plan: list[tuple[str, str, list[list[float]]]] = []
+    for text, name in mapping.items():
+        cluster = cluster_of_label(st, text)
+        embs = [st.embeddings[i] for i, c in enumerate(st.speaker_of_emb[:len(st.embeddings)])
+                if int(c) == cluster] if cluster is not None else []
+        if not embs:
+            raise ValueError(f"{session_id}: метки {text!r} в сессии нет; есть {', '.join(known) or '—'}")
+        plan.append((text, name, embs))
+    lib = VoiceLibrary(cfg.voices_dir, cfg.voice_match_similarity)
+    out: list[tuple[str, str, int]] = []
+    for text, name, embs in plan:
+        prof = lib.add(name, embs, source=f"{session_id}:{text}")
+        print(f"{name} ← {text}: +{len(embs)} отпечатков, всего {prof.count}")
+        out.append((name, text, len(embs)))
+    return out
+
+
+def show_voices(cfg: Config) -> None:
+    lib = VoiceLibrary(cfg.voices_dir, cfg.voice_match_similarity)
+    names = lib.names()
+    if not names:
+        print(f"Библиотека голосов пуста ({cfg.voices_dir})")
+        return
+    print(f"Библиотека голосов ({cfg.voices_dir}), порог {cfg.voice_match_similarity}:")
+    for name in names:
+        prof = lib.get(name)
+        print(f"  {name}: {prof.count} отпечатков ({len(prof.samples)} хранится) · "
+              f"{', '.join(prof.sources) or 'источник не указан'}")
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ap = argparse.ArgumentParser(prog="transcriber")
@@ -155,6 +246,11 @@ def main(argv: list[str] | None = None) -> None:
     rf.add_argument("session_id")
     rt = sub.add_parser("retranscribe", help="run the whole pipeline again over the session's saved audio")
     rt.add_argument("session_id")
+    ln = sub.add_parser("learn", help='teach a voice: learn SESSION_ID "Speaker 2=Ярослав Серов" …')
+    ln.add_argument("session_id")
+    ln.add_argument("pairs", nargs="*", metavar="SPEAKER=NAME")
+    ln.add_argument("--from-note", metavar="PATH", help="взять карту из ключа speakers: фронт-маттера MTG-заметки")
+    sub.add_parser("voices", help="list the voice library")
     args = ap.parse_args(argv)
     cfg = load_config()
     if args.cmd == "run":
@@ -180,6 +276,17 @@ def main(argv: list[str] | None = None) -> None:
         except ValueError as e:
             print(e, file=sys.stderr)
             raise SystemExit(2) from None
+    elif args.cmd == "learn":
+        try:
+            mapping = speakers_from_note(Path(args.from_note)) if args.from_note else {}
+            mapping.update(dict(parse_pair(x) for x in args.pairs))
+            learn(cfg, args.session_id, mapping)
+        except (ValueError, OSError) as e:
+            print(e, file=sys.stderr)
+            raise SystemExit(2) from None
+        print("готово; чтобы имена попали в Raw — transcriber refinalize " + args.session_id)
+    elif args.cmd == "voices":
+        show_voices(cfg)
 
 
 if __name__ == "__main__":

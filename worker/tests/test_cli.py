@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 from transcriber import cli, daemon
 from transcriber.config import Config
+from transcriber.voices import VoiceLibrary
 from tests.conftest import FakeAsr, FakeEmbedder, SR, fake_prob, make_session, silence, to_pcm_bytes, tone
 
 
@@ -343,3 +344,95 @@ def test_retranscribe_command_prints_path_and_refuses_without_audio(vault, tmp_p
         cli.main(["retranscribe", "2026-09-15-1430"])
     assert e.value.code == 2
     assert "аудио" in capsys.readouterr().err
+
+
+# ---- голосовые профили: learn / voices ---------------------------------------
+
+
+def _refinalized(vault, tmp_path) -> tuple[Config, Path]:
+    """Синтетическая сессия после refinalize: кластер 0 — три эмбеддинга, кластер 1 — два."""
+    sessions = tmp_path / "sessions"
+    d = _synthetic_session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, glossary=["Магнит"])
+    cli.refinalize(cfg, "2026-09-15-1430")
+    assert json.loads((d / "state.json").read_text())["speaker_of_emb"] == [0, 1, 0, 1, 0]
+    return cfg, d
+
+
+def test_learn_collects_cluster_embeddings_into_a_profile(vault, tmp_path, capsys):
+    cfg, _d = _refinalized(vault, tmp_path)
+    cli.learn(cfg, "2026-09-15-1430", {"Speaker 1": "Ярослав Серов"})
+    prof = VoiceLibrary(cfg.voices_dir).get("Ярослав Серов")
+    assert prof is not None and prof.count == 3 and len(prof.samples) == 3
+    assert prof.sources == ["2026-09-15-1430:Speaker 1"]
+    out = capsys.readouterr().out
+    assert "Ярослав Серов" in out and "Speaker 1" in out and "3" in out
+
+
+def test_learn_accepts_a_cluster_that_is_already_named(vault, tmp_path):
+    cfg, d = _refinalized(vault, tmp_path)
+    state = json.loads((d / "state.json").read_text())
+    state["speaker_names"] = {"0": "Дарья"}                      # так подписано в текущем Raw
+    (d / "state.json").write_text(json.dumps(state, ensure_ascii=False))
+    cli.learn(cfg, "2026-09-15-1430", {"Дарья": "Дарья Иванова"})
+    assert VoiceLibrary(cfg.voices_dir).get("Дарья Иванова").count == 3
+
+
+def test_learn_refuses_an_unknown_label_and_writes_nothing(vault, tmp_path):
+    import pytest
+
+    cfg, _d = _refinalized(vault, tmp_path)
+    with pytest.raises(ValueError, match="Speaker 9"):
+        cli.learn(cfg, "2026-09-15-1430", {"Speaker 1": "Ярослав Серов", "Speaker 9": "Никто"})
+    assert VoiceLibrary(cfg.voices_dir).names() == []            # проверка до записи, профилей нет
+
+
+def test_learn_reads_the_mapping_from_an_mtg_note(vault, tmp_path):
+    cfg, _d = _refinalized(vault, tmp_path)
+    note = tmp_path / "MTG.md"
+    note.write_text("\n".join([
+        "---", "type: meeting", "id: MTG-2026-09-15-1430", "title: Встреча", "date: 2026-09-15",
+        "participants: [Владислав, Ярослав Серов]",
+        "speakers: {Speaker 1: Ярослав Серов, Speaker 2: Дарья}",
+        'transcript: "[[Local-2026-09-15-1430-Встреча]]"', "tags: [meeting]", "---", "", "# Встреча", "",
+    ]), encoding="utf-8")
+    assert cli.speakers_from_note(note) == {"Speaker 1": "Ярослав Серов", "Speaker 2": "Дарья"}
+    cli.learn(cfg, "2026-09-15-1430", cli.speakers_from_note(note))
+    lib = VoiceLibrary(cfg.voices_dir)
+    assert lib.names() == ["Дарья", "Ярослав Серов"]
+    assert lib.get("Ярослав Серов").count == 3 and lib.get("Дарья").count == 2
+
+
+def test_learn_command_and_voices_command(vault, tmp_path, capsys, monkeypatch):
+    cfg, _d = _refinalized(vault, tmp_path)
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    cli.main(["learn", "2026-09-15-1430", "Speaker 1=Ярослав Серов"])
+    capsys.readouterr()
+    cli.main(["voices"])
+    out = capsys.readouterr().out
+    assert "Ярослав Серов" in out and "2026-09-15-1430:Speaker 1" in out and "3" in out
+
+    cli.main(["voices"])                                          # пустая библиотека не падает
+    VoiceLibrary(cfg.voices_dir).path_of("Ярослав Серов").unlink()
+    cli.main(["voices"])
+    assert "пуст" in capsys.readouterr().out
+
+
+def test_learn_command_reports_a_bad_pair_as_exit_2(vault, tmp_path, capsys, monkeypatch):
+    import pytest
+
+    cfg, _d = _refinalized(vault, tmp_path)
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["learn", "2026-09-15-1430", "без знака равно"])
+    assert e.value.code == 2 and "=" in capsys.readouterr().err
+
+
+def test_refinalize_puts_learned_names_into_the_raw(vault, tmp_path):
+    cfg, d = _refinalized(vault, tmp_path)
+    cli.learn(cfg, "2026-09-15-1430", {"Speaker 1": "Ярослав Серов"})
+    raw = cli.refinalize(cfg, "2026-09-15-1430")
+    text = raw.read_text()
+    assert "Ярослав Серов: Давайте обсудим контракт" in text
+    assert "Опознаны по голосу: Ярослав Серов" in text
+    assert json.loads((d / "state.json").read_text())["speaker_names"] == {"0": "Ярослав Серов"}
