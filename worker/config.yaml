@@ -10,6 +10,9 @@ block_gap_keep_s: 0.5    # столько тишины оставляем в с�
 block_idle_s: 4          # тишины после последней реплики — закрываем блок, не ждём продолжения
 carry_context: true      # хвост прошлого блока канала уходит в промпт следующего
 speaker_similarity: 0.3
+# Голосовые профили: библиотека в ~/Claude/transcriber/voices, пополняется через transcriber learn.
+voice_match_similarity: 0.45   # ниже — кластер остаётся «Speaker N»; поднять, если имена липнут не к тем
+voice_min_samples: 3           # кластер короче именем не подписываем
 echo_overlap: 0.8
 echo_similarity: 0.6
 echo_strong_similarity: 0.8
