@@ -1,4 +1,47 @@
+import AppKit
 import Foundation
 import TranscriberCore
 
-Log.shared.info("placeholder main")
+/// `Transcriber --record-test 8` records 8 seconds into a session and prints peak levels
+/// per input to the log; used to verify capture + permissions without a meeting.
+if let i = CommandLine.arguments.firstIndex(of: "--record-test") {
+    let seconds = Double(CommandLine.arguments.dropFirst(i + 1).first ?? "8") ?? 8
+    let log = Log.shared
+    let store = SessionStore(root: SessionStore.defaultRoot.appendingPathComponent("record-test"))
+    let dir = try! store.create(app: "manual", title: "record-test", participants: [])
+    let mic = try! PcmWriter(url: dir.micURL)
+    let sys = try! PcmWriter(url: dir.sysURL)
+    let cap = TapCapture()
+    var micMixer: Downmixer?
+    var sysMixer: Downmixer?
+    var micPeak: Float = 0
+    var sysPeak: Float = 0
+    try! cap.start { chunk in
+        if sysMixer == nil {
+            sysMixer = try? Downmixer(inputRate: cap.sampleRate, inputChannels: cap.sysChannels)
+            micMixer = try? Downmixer(inputRate: cap.sampleRate, inputChannels: max(chunk.mic.count / chunk.frames, 1))
+        }
+        micPeak = max(micPeak, chunk.mic.map(abs).max() ?? 0)
+        sysPeak = max(sysPeak, chunk.sys.map(abs).max() ?? 0)
+        mic.write(micMixer!.process(interleaved: chunk.mic, frames: chunk.frames))
+        sys.write(sysMixer!.process(interleaved: chunk.sys, frames: chunk.frames))
+    }
+    let say = Process()
+    say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+    say.arguments = ["-v", "Milena", "Проверка захвата системного звука транскрибатором, раз, два, три"]
+    try? say.run()
+    Thread.sleep(forTimeInterval: seconds)
+    cap.stop()
+    mic.close()
+    sys.close()
+    try? dir.requestStop()
+    log.info("record-test: \(dir.url.path) mic peak \(micPeak) sys peak \(sysPeak) mic samples \(mic.samplesWritten) sys samples \(sys.samplesWritten)")
+    print("record-test done: \(dir.url.path) mic peak \(micPeak) sys peak \(sysPeak)")
+    exit(0)
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()
