@@ -9,11 +9,22 @@ def test_clean_strips_hallucinations_and_space():
     assert clean_text("Обычный текст", h) == "Обычный текст"
 
 
-def test_prompt_has_participants_and_glossary_capped():
-    p = build_prompt(["Егор Спирин"], ["CDP", "Омни"])
-    assert p == "Участники: Владислав, Егор Спирин. Термины: CDP, Омни."
-    long = build_prompt([], [f"термин{i}" for i in range(200)])
-    assert len(long) <= 600
+def test_prompt_is_terms_only_by_default():
+    """Имена — главный источник утечки промпта, поэтому по умолчанию их в промпте нет."""
+    assert build_prompt(["Егор Спирин"], ["CDP", "Омни"]) == "Термины: CDP, Омни."
+    assert build_prompt(["Егор Спирин"], []) == ""
+
+
+def test_prompt_adds_participants_only_when_asked():
+    p = build_prompt(["Егор Спирин"], ["CDP"], include_participants=True)
+    assert p == "Участники: Владислав, Егор Спирин. Термины: CDP."
+    assert build_prompt([], ["CDP"], include_participants=True) == "Термины: CDP."
+
+
+def test_prompt_caps_glossary_at_twelve_terms():
+    p = build_prompt([], [f"термин{i}" for i in range(200)])
+    assert p.startswith("Термины: термин0,") and "термин11" in p
+    assert "термин12" not in p and len(p) <= 600
 
 
 def test_prompt_caps_even_without_comma_in_truncated_prefix():

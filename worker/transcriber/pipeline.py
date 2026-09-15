@@ -18,6 +18,8 @@ from .vault import ensure_stub, write_raw
 
 log = logging.getLogger("transcriber")
 
+PROMPT_LEAK = "prompt leak"     # имя правила из quality.junk_reason, которое лечится повтором
+
 
 def recluster_records(cfg: Config, st: State) -> None:
     """Глобальная перекластеризация по всем эмбеддингам сессии + перелейблинг sys-реплик.
@@ -62,7 +64,8 @@ class Pipeline:
             self.segs[ch] = Segmenter(prob_factory(), cfg.sample_rate, cfg.vad_threshold, cfg.min_silence_ms,
                                       cfg.speech_pad_ms, cfg.max_utterance_s, start_sample=off, preroll=preroll)
         self.clusterer = OnlineClusterer.from_history(cfg.speaker_similarity, st.embeddings, st.speaker_of_emb)
-        self.prompt = build_prompt(session.meta.participants, cfg.glossary)
+        self.prompt = build_prompt(session.meta.participants, cfg.glossary,
+                                   include_participants=bool(session.meta.participants))
         self.prompt_words = prompt_vocabulary(session.meta.participants, cfg.glossary)
         self.last_sys_speaker = next((r.speaker for r in reversed(st.records) if r.channel == "sys"), label(0))
         ensure_stub(cfg, session)
@@ -99,20 +102,36 @@ class Pipeline:
     def _sec(self, samples: int) -> float:
         return samples / self.cfg.sample_rate
 
-    def _transcribe(self, u: Utterance) -> str | None:
+    def _transcribe(self, u: Utterance, prompt: str | None = None) -> str | None:
         try:
-            return self.asr(u.audio, self.prompt)
+            return self.asr(u.audio, self.prompt if prompt is None else prompt)
         except Exception as e:  # noqa: BLE001 — any model failure becomes a marker in the transcript
             msg = f"asr failed at {self._sec(u.start):.1f}-{self._sec(u.end):.1f}: {e!r}"
             log.warning(msg)
             self.s.state.errors.append(msg)
             return None
 
+    def _reason(self, text: str | None) -> str | None:
+        return junk_reason(text, self.prompt_words, self.cfg.language) if text else None
+
     def _drop_junk(self, text: str | None, u: Utterance) -> str | None:
-        """Галлюцинация — это не «не распознано», а пустая реплика: в транскрипте её нет."""
-        reason = junk_reason(text, self.prompt_words, self.cfg.language) if text else None
+        """Галлюцинация — это не «не распознано», а пустая реплика: в транскрипте её нет.
+
+        Пересказ промпта — исключение: под ним обычно живая речь, поэтому реплику
+        переспрашиваем у модели без промпта и гасим, только если утечка повторилась.
+        """
+        reason = self._reason(text)
         if reason is None:
             return text
+        if reason == PROMPT_LEAK and self.prompt:
+            log.info("retry without prompt %.1f-%.1f: %s",
+                     self._sec(u.start), self._sec(u.end), (text or "")[:60])
+            retry = self._transcribe(u, prompt="")
+            retry_reason = self._reason(retry)
+            if retry and retry_reason is None:
+                log.info("retry kept %.1f-%.1f: %s", self._sec(u.start), self._sec(u.end), retry)
+                return retry
+            text, reason = retry or text, retry_reason or reason
         log.info("dropped (%s) %.1f-%.1f: %s", reason, self._sec(u.start), self._sec(u.end), text)
         return ""
 

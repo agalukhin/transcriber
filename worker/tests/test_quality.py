@@ -37,8 +37,16 @@ def test_prompt_leak_catches_prompt_echoes_from_the_real_meeting():
 def test_prompt_leak_spares_normal_speech_and_short_phrases():
     assert not prompt_leak("Давайте тогда это запланируем, начнём с 1 октября", VOCAB)
     assert not prompt_leak("В Магните мы считаем CDP главным приоритетом на квартал", VOCAB)
-    assert not prompt_leak("Магнит Омни", VOCAB)          # меньше трёх слов — не трогаем
+    assert not prompt_leak("Магнит выкатил новый личный кабинет", VOCAB)
     assert not prompt_leak("", VOCAB)
+
+
+def test_prompt_leak_catches_two_word_echoes():
+    """Пара слов, оба из промпта, — это тоже пересказ промпта, а не реплика."""
+    assert prompt_leak("Термина, Галухин", VOCAB)
+    assert prompt_leak("Магнит Омни", VOCAB)
+    assert not prompt_leak("Магнит растёт", VOCAB)         # только одно слово из промпта
+    assert not prompt_leak("Магнит", VOCAB)                # одно слово — не трогаем
 
 
 def test_repetitive_catches_consecutive_ngrams_and_low_variety():

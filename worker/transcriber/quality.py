@@ -14,9 +14,9 @@ import re
 
 WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 FILLER_RE = re.compile(r"^(а+|э+|м+|ну|угу|ага|хм+|ммм+|эм+)$")
-PROMPT_KEYWORDS = ("Участники", "Термины")
+PROMPT_KEYWORDS = ("Участники", "Участник", "Термины", "Термин", "Термина")   # модель склоняет заголовки промпта
 
-LEAK_MIN_WORDS = 3
+LEAK_MIN_WORDS = 2
 LEAK_SHARE = 0.6
 REPEAT_TIMES = 3
 VARIETY_MIN_WORDS = 6
@@ -41,7 +41,10 @@ def prompt_leak(text: str, prompt_words: set[str]) -> bool:
     w = tokenize(text)
     if len(w) < LEAK_MIN_WORDS:
         return False
-    return sum(1 for x in w if x in prompt_words) / len(w) >= LEAK_SHARE
+    hits = sum(1 for x in w if x in prompt_words)
+    if len(w) == 2:
+        return hits == 2          # «Термина, Галухин» — целиком из промпта, доля тут не работает
+    return hits / len(w) >= LEAK_SHARE
 
 
 def _max_consecutive(w: list[str], n: int) -> int:

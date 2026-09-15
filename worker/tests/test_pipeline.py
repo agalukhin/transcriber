@@ -271,3 +271,46 @@ def test_finalize_absorbs_single_utterance_speaker(vault, tmp_path):
     assert [r.speaker for r in recs] == ["Speaker 1", "Speaker 2", "Speaker 1", "Speaker 2", "Speaker 1"]
     assert len(set(s.state.speaker_of_emb)) == 2
     assert "Говорящих на канале собеседников: 2" in Path(s.state.raw_path).read_text()
+
+
+class LeakyAsr:
+    """Whisper с промптом пересказывает промпт, без промпта слышит живую речь."""
+
+    def __init__(self, always_leaks: bool = False):
+        self.always_leaks = always_leaks
+        self.prompts: list[str] = []
+
+    def __call__(self, audio: np.ndarray, prompt: str = "") -> str:
+        self.prompts.append(prompt)
+        if prompt or self.always_leaks:
+            return "Термины, Саша Галухин, Магнит, Омни."
+        return "Давайте вернёмся к контракту"
+
+
+def test_prompt_leak_is_retried_without_prompt(vault, tmp_path, caplog):
+    """Утечка промпта — не повод терять реплику: переспрашиваем модель без промпта."""
+    d = make_session(tmp_path / "sessions", participants=["Саша Галухин"])
+    write(d, "mic.pcm", silence(5.0))
+    write(d, "sys.pcm", np.concatenate([tone(1.5, 880), silence(2.0)]))
+    asr = LeakyAsr()
+    cfg, s, p = build(vault, tmp_path / "sessions", asr=asr, glossary=["Магнит", "Омни", "CDP"])
+    with caplog.at_level("INFO", logger="transcriber"):
+        p.step()
+    assert [r.text for r in s.state.records if r.channel == "sys"] == ["Давайте вернёмся к контракту"]
+    assert asr.prompts[0] and asr.prompts[1] == ""
+    assert "retry without prompt" in caplog.text
+    assert "Давайте вернёмся к контракту" in Path(s.state.raw_path).read_text()
+
+
+def test_prompt_leak_on_retry_too_is_dropped(vault, tmp_path, caplog):
+    d = make_session(tmp_path / "sessions", participants=["Саша Галухин"])
+    write(d, "mic.pcm", silence(5.0))
+    write(d, "sys.pcm", np.concatenate([tone(1.5, 880), silence(2.0)]))
+    asr = LeakyAsr(always_leaks=True)
+    cfg, s, p = build(vault, tmp_path / "sessions", asr=asr, glossary=["Магнит", "Омни", "CDP"])
+    with caplog.at_level("INFO", logger="transcriber"):
+        p.step()
+    assert [r.text for r in s.state.records if r.channel == "sys"] == [""]
+    assert asr.prompts == [asr.prompts[0], ""]
+    assert "retry without prompt" in caplog.text and "prompt leak" in caplog.text
+    assert "Галухин" not in Path(s.state.raw_path).read_text().split("## Полный транскрипт", 1)[1]

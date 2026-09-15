@@ -5,6 +5,7 @@ import re
 import numpy as np
 
 PROMPT_MAX = 600  # chars; whisper keeps ~224 tokens of prompt
+GLOSSARY_MAX = 12       # чем длиннее промпт, тем охотнее модель пересказывает его вместо речи
 NO_SPEECH_MAX = 0.6     # сегмент с такой вероятностью тишины — не речь, а домысел модели
 LOGPROB_MIN = -1.2      # и сегмент, в который модель сама не верит
 
@@ -17,11 +18,15 @@ def clean_text(text: str, hallucinations: list[str]) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
-def build_prompt(participants: list[str], glossary: list[str]) -> str:
-    names = ["Владислав"] + [p for p in participants if p and p != "Владислав"]
-    parts = [f"Участники: {', '.join(names)}."]
+def build_prompt(participants: list[str], glossary: list[str], include_participants: bool = False) -> str:
+    """Короткий промпт из терминов: имена whisper охотнее всего пересказывает вместо речи,
+    поэтому «Участники: …» добавляется, только когда участники действительно известны."""
+    parts = []
+    if include_participants and participants:
+        names = ["Владислав"] + [p for p in participants if p and p != "Владислав"]
+        parts.append(f"Участники: {', '.join(names)}.")
     if glossary:
-        parts.append(f"Термины: {', '.join(glossary)}.")
+        parts.append(f"Термины: {', '.join(glossary[:GLOSSARY_MAX])}.")
     prompt = " ".join(parts)
     return prompt if len(prompt) <= PROMPT_MAX else prompt[:PROMPT_MAX - 1].rsplit(",", 1)[0] + "."
 
