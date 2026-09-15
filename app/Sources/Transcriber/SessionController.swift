@@ -88,6 +88,7 @@ final class SessionController {
         power.release()
         state = .idle
         log.info("session \(dir.id) stopped; mic \(micSamples) samples")
+        verifyCaptureReleased()
         onStateChange?(state)
     }
 
@@ -113,6 +114,20 @@ final class SessionController {
         } catch {
             capture = nil
             log.error("capture restart failed for session \(dir.id): \(error)")
+        }
+    }
+
+    /// Diagnostic only: after a stop Core Audio must no longer count us as recording. A
+    /// lingering flag means a tap or aggregate device outlived the session (or the flag itself
+    /// is stale) — either way we want it in the log. Off the main thread: it lists processes.
+    private func verifyCaptureReleased() {
+        let log = self.log
+        DispatchQueue.global(qos: .utility).async {
+            if AudioProcesses.selfIsRunningInput() {
+                log.warn("still running input after stop")
+            } else {
+                log.info("capture released")
+            }
         }
     }
 

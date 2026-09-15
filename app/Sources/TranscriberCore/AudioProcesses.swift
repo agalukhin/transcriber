@@ -50,6 +50,9 @@ enum CoreAudioProps {
 }
 
 public enum AudioProcesses {
+    /// Our own bundle id — excluded from mic-holder diagnostics, matched for the teardown check.
+    public static let ownBundleID = "ru.slesarev.transcriber"
+
     /// Every process Core Audio knows about, with whether it currently records from an input device.
     public static func list() -> [AudioProcess] {
         let system = AudioObjectID(kAudioObjectSystemObject)
@@ -61,6 +64,14 @@ public enum AudioProcesses {
                 isRunningInput: CoreAudioProps.get(obj, kAudioProcessPropertyIsRunningInput, default: UInt32(0)) != 0
             )
         }
+    }
+
+    /// Whether Core Audio still reports *us* as recording from an input device. Purely
+    /// diagnostic: after a session stops this must be false, and a lingering true is the
+    /// signature of a tap or aggregate device that outlived its session.
+    public static func selfIsRunningInput() -> Bool {
+        let me = getpid()
+        return list().contains { ($0.pid == me || $0.bundleID.hasPrefix(ownBundleID)) && $0.isRunningInput }
     }
 
     /// Core Audio object for our own process, used to exclude ourselves from the tap.

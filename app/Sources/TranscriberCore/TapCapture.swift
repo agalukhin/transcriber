@@ -103,7 +103,7 @@ public final class TapCapture {
 
     public func stop() {
         if let p = procID, aggregateID != kAudioObjectUnknown {
-            AudioDeviceStop(aggregateID, p)
+            check("AudioDeviceStop", AudioDeviceStop(aggregateID, p))
         }
         teardown()
         queue.sync {}   // let the last delivered chunk finish
@@ -112,17 +112,24 @@ public final class TapCapture {
 
     private func teardown() {
         if let p = procID, aggregateID != kAudioObjectUnknown {
-            AudioDeviceDestroyIOProcID(aggregateID, p)
+            check("AudioDeviceDestroyIOProcID", AudioDeviceDestroyIOProcID(aggregateID, p))
         }
         procID = nil
         if aggregateID != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateID)
+            check("AudioHardwareDestroyAggregateDevice", AudioHardwareDestroyAggregateDevice(aggregateID))
             aggregateID = kAudioObjectUnknown
         }
         if tapID != kAudioObjectUnknown {
-            AudioHardwareDestroyProcessTap(tapID)
+            check("AudioHardwareDestroyProcessTap", AudioHardwareDestroyProcessTap(tapID))
             tapID = kAudioObjectUnknown
         }
+    }
+
+    /// Teardown is best-effort by nature, but a silent non-zero status here is exactly how a
+    /// leaked tap or aggregate device begins — so every call reports itself.
+    private func check(_ call: String, _ status: OSStatus) {
+        guard status != noErr else { return }
+        Log.shared.warn("capture teardown: \(call) returned OSStatus \(status)")
     }
 
     private func inputBufferChannels(_ device: AudioObjectID) -> [Int] {
