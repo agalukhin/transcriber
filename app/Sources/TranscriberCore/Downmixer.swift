@@ -29,8 +29,12 @@ public final class Downmixer {
 
     /// `interleaved` holds `frames * inputChannels` floats.
     public func process(interleaved: [Float], frames: Int) -> [Int16] {
-        guard frames > 0,
-              let inBuf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: AVAudioFrameCount(frames))
+        guard frames > 0 else { return [] }
+        guard interleaved.count >= frames * Int(inFormat.channelCount) else {
+            Log.shared.error("downmix: short input — \(interleaved.count) floats for \(frames) frames × \(inFormat.channelCount)ch")
+            return []
+        }
+        guard let inBuf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: AVAudioFrameCount(frames))
         else { return [] }
         inBuf.frameLength = AVAudioFrameCount(frames)
         interleaved.withUnsafeBufferPointer { src in

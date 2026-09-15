@@ -44,3 +44,8 @@ private func zeroCrossings(_ x: [Int16]) -> Int {
     #expect(abs(out.count - 8_000) < 200)
     #expect(abs(zeroCrossings(out) - 1000) < 60)
 }
+
+@Test func shortInputIsDroppedNotRead() throws {
+    let d = try Downmixer(inputRate: 48_000, inputChannels: 2)
+    #expect(d.process(interleaved: [Float](repeating: 0.1, count: 100), frames: 512).isEmpty)
+}

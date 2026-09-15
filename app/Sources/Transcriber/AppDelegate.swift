@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.info("app launched")
+        PowerHold.resetAtLaunch()   // a crash mid-session could have left sleep disabled
         _ = TalkInspector.ensureAccessibility()
         status.onToggle = { [weak self] in self?.toggle() }
         status.onOpenNote = { [weak self] in self?.openNote() }
@@ -23,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         floating.onClick = { [weak self] in self?.openNote() }
         controller.onStateChange = { [weak self] state in
             DispatchQueue.main.async { self?.render(state) }
+        }
+        controller.onError = { [weak self] message in
+            DispatchQueue.main.async { self?.status.setProblem(message) }
         }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,

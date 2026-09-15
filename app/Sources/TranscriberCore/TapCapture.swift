@@ -34,6 +34,7 @@ public final class TapCapture {
     private var procID: AudioDeviceIOProcID?
     private let queue = DispatchQueue(label: "transcriber.capture", qos: .userInitiated)
     private var handler: ((CaptureChunk) -> Void)?
+    private var warnedShortBuffers = false   // capture queue only
 
     public init() {}
 
@@ -69,7 +70,7 @@ public final class TapCapture {
         var agg = AudioObjectID(kAudioObjectUnknown)
         status = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &agg)
         guard status == noErr else {
-            AudioHardwareDestroyProcessTap(tapID)
+            teardown()
             throw CaptureError.coreAudio("AudioHardwareCreateAggregateDevice", status)
         }
         aggregateID = agg
@@ -137,13 +138,21 @@ public final class TapCapture {
     /// Runs on `queue` (the IOProc dispatch queue): copy out and hand over.
     private func deliver(_ inData: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inData))
-        guard buffers.count >= 2, let handler else { return }
+        guard let handler else { return }
+        guard buffers.count >= 2 else {
+            if !warnedShortBuffers {
+                warnedShortBuffers = true
+                Log.shared.warn("capture: input device disappeared, mic track stalled")
+            }
+            return
+        }
         let micBuf = buffers[0]
         let sysBuf = buffers[1]
+        guard let micPtr = micBuf.mData, let sysPtr = sysBuf.mData else { return }
         let micCount = Int(micBuf.mDataByteSize) / MemoryLayout<Float>.size
         let sysCount = Int(sysBuf.mDataByteSize) / MemoryLayout<Float>.size
-        let mic = Array(UnsafeBufferPointer(start: micBuf.mData?.assumingMemoryBound(to: Float.self), count: micCount))
-        let sys = Array(UnsafeBufferPointer(start: sysBuf.mData?.assumingMemoryBound(to: Float.self), count: sysCount))
+        let mic = Array(UnsafeBufferPointer(start: micPtr.assumingMemoryBound(to: Float.self), count: micCount))
+        let sys = Array(UnsafeBufferPointer(start: sysPtr.assumingMemoryBound(to: Float.self), count: sysCount))
         let frames = micCount / max(Int(micBuf.mNumberChannels), 1)
         handler(CaptureChunk(mic: mic, sys: sys, frames: frames))
     }
