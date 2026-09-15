@@ -1,3 +1,4 @@
+import ApplicationServices
 import AppKit
 import Foundation
 import TranscriberCore
@@ -45,6 +46,54 @@ if let i = CommandLine.arguments.firstIndex(of: "--record-test") {
     try? dir.requestStop()
     log.info("record-test: \(dir.url.path) mic peak \(micPeak) sys peak \(sysPeak) mic samples \(mic.samplesWritten) sys samples \(sys.samplesWritten)")
     print("record-test done: \(dir.url.path) mic peak \(micPeak) sys peak \(sysPeak)")
+    exit(0)
+}
+
+/// `Transcriber --ax-dump <bundle-prefix> [seconds] [interval]` dumps the Accessibility tree of a
+/// running app every `interval` seconds for `seconds`, writing a file per *changed* snapshot to
+/// ~/Library/Logs/transcriber-ax. Reconnaissance only: nothing is clicked, nothing is parsed.
+/// Needs the Accessibility grant, so run the installed bundle:
+/// `open -n -a ~/Applications/Transcriber.app --args --ax-dump kontur.talk 60 2`.
+if let i = CommandLine.arguments.firstIndex(of: "--ax-dump") {
+    let rest = Array(CommandLine.arguments.dropFirst(i + 1))
+    let prefix = rest.first ?? TalkInspector.bundleID
+    let seconds = Double(rest.dropFirst().first ?? "60") ?? 60
+    let interval = max(Double(rest.dropFirst(2).first ?? "2") ?? 2, 0.2)
+    let log = Log.shared
+    guard TalkInspector.ensureAccessibility() else {
+        print("ax-dump: нет разрешения Accessibility")
+        log.warn("ax-dump: accessibility not granted")
+        exit(1)
+    }
+    guard let pid = AXDump.pidOf(bundlePrefix: prefix) else {
+        print("ax-dump: приложение с префиксом '\(prefix)' не запущено")
+        log.warn("ax-dump: no running app with prefix '\(prefix)'")
+        exit(1)
+    }
+    // Chrome and Electron build the web-content tree only after the flags are set: give the app a
+    // beat to do it, otherwise the first snapshot is a stub of a dozen nodes.
+    AXDump.enableEnhancedAccessibility(AXUIElementCreateApplication(pid))
+    Thread.sleep(forTimeInterval: 1)
+    let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/transcriber-ax")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let stamp = DateFormatter()
+    stamp.dateFormat = "yyyy-MM-dd-HHmmss"
+    var previous: String?
+    var written = 0
+    let deadline = Date().addingTimeInterval(seconds)
+    repeat {
+        let text = AXDump.dump(pid: pid)
+        if text != previous {
+            previous = text
+            let url = dir.appendingPathComponent("\(stamp.string(from: Date()))-\(prefix).txt")
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+            written += 1
+            log.info("ax-dump: \(url.lastPathComponent), \(text.split(separator: "\n").count) строк")
+        }
+        Thread.sleep(forTimeInterval: interval)
+    } while Date() < deadline
+    print("ax-dump: \(prefix) pid \(pid), снимков записано \(written) в \(dir.path)")
+    log.info("ax-dump: \(prefix) pid \(pid), \(written) snapshots in \(dir.path)")
     exit(0)
 }
 
