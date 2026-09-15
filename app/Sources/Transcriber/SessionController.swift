@@ -36,6 +36,20 @@ final class SessionController {
         get { chunkLock.lock(); defer { chunkLock.unlock() }; return lastChunkAtStorage }
         set { chunkLock.lock(); lastChunkAtStorage = newValue; chunkLock.unlock() }
     }
+    /// Last time either channel carried something louder than room noise. Same lock discipline.
+    private var lastVoiceAtStorage = Date()
+    private var lastVoiceAt: Date {
+        get { chunkLock.lock(); defer { chunkLock.unlock() }; return lastVoiceAtStorage }
+        set { chunkLock.lock(); lastVoiceAtStorage = newValue; chunkLock.unlock() }
+    }
+    static let micVoicePeak: Float = 0.05   // speech into the built-in mic is well above this
+    static let sysVoicePeak: Float = 0.02   // remote speech through the tap
+
+    /// Seconds since anyone spoke on either channel (0 when idle).
+    func silentFor(now: Date) -> TimeInterval {
+        guard current != nil else { return 0 }
+        return now.timeIntervalSince(lastVoiceAt)
+    }
 
     init(store: SessionStore = SessionStore(root: SessionStore.defaultRoot)) {
         self.store = store
@@ -60,6 +74,7 @@ final class SessionController {
             sysMixer = nil
             warnedNoMixer = false
             lastChunkAt = Date()
+            lastVoiceAt = Date()
             let cap = TapCapture()
             capture = cap
             try cap.start { [weak self] chunk in self?.consume(chunk) }
@@ -156,10 +171,19 @@ final class SessionController {
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
     }
 
+    private func peak(_ samples: [Float]) -> Float {
+        var m: Float = 0
+        for x in samples where abs(x) > m { m = abs(x) }
+        return m
+    }
+
     /// Runs on the capture queue — the only place the mixers and writers are touched while recording.
     private func consume(_ chunk: CaptureChunk) {
         guard chunk.frames > 0, let capture else { return }
         lastChunkAt = Date()
+        if peak(chunk.mic) > Self.micVoicePeak || peak(chunk.sys) > Self.sysVoicePeak {
+            lastVoiceAt = Date()
+        }
         if micMixer == nil {
             let channels = max(chunk.mic.count / chunk.frames, 1)
             micMixer = try? Downmixer(inputRate: capture.sampleRate, inputChannels: channels)

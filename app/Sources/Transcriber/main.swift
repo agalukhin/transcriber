@@ -48,6 +48,26 @@ if let i = CommandLine.arguments.firstIndex(of: "--record-test") {
     exit(0)
 }
 
+/// `Transcriber --prompt-test [seconds]` shows the meeting prompt for a visual check, then exits.
+if let i = CommandLine.arguments.firstIndex(of: "--prompt-test") {
+    let seconds = Double(CommandLine.arguments.dropFirst(i + 1).first ?? "6") ?? 6
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let prompt = PromptPanel()
+    DispatchQueue.main.async {
+        if CommandLine.arguments.contains("stop") {
+            prompt.show(PromptPanel.stop(minutes: 3), onPrimary: { print("stop") }, onSecondary: { print("continue") })
+        } else {
+            prompt.show(appName: "браузере", onRecord: { print("record") }, onSkip: { print("skip") })
+        }
+    }
+    if let j = CommandLine.arguments.firstIndex(of: "--prompt-png"), let path = CommandLine.arguments.dropFirst(j + 1).first {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { prompt.snapshot(to: URL(fileURLWithPath: path)) }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { prompt.dismiss(); exit(0) }
+    app.run()
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

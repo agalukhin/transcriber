@@ -5,6 +5,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let log = Log.shared
     private let status = StatusItem()
     private let prompt = PromptPanel()
+    private let stopPrompt = PromptPanel()
+    /// «Продолжить» on the silence card mutes it until someone speaks again.
+    private var stopPromptMutedUntilVoice = false
+    static let silencePromptAfter: TimeInterval = 180
+    static let silenceStopAfter: TimeInterval = 600
     private let floating = FloatingButton()
     private let controller = SessionController()
     private let store = SessionStore(root: SessionStore.defaultRoot)
@@ -69,8 +74,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tick() {
         controller.checkHealth(now: Date())
+        watchSilence(now: Date())
         showIdleMeetingHint()
         poll()
+    }
+
+    /// A browser keeps the mic for minutes after a call and plays sound outside calls, so neither
+    /// system flag marks the end of a meeting reliably. Silence on both channels does: after
+    /// `silencePromptAfter` seconds ask, after `silenceStopAfter` stop without asking.
+    private func watchSilence(now: Date) {
+        guard controller.current != nil else {
+            stopPrompt.dismiss()
+            stopPromptMutedUntilVoice = false
+            return
+        }
+        let silent = controller.silentFor(now: now)
+        if silent < Self.silencePromptAfter {
+            stopPromptMutedUntilVoice = false
+            if stopPrompt.isShowing { stopPrompt.dismiss() }   // someone spoke again
+            return
+        }
+        if silent >= Self.silenceStopAfter {
+            log.info("silence \(Int(silent))s: stopping recording")
+            stopPrompt.dismiss()
+            stopRecordingKeepingMeeting()
+            return
+        }
+        guard !stopPrompt.isShowing, !stopPromptMutedUntilVoice else { return }
+        stopPrompt.show(PromptPanel.stop(minutes: Int(silent / 60)),
+                        onPrimary: { [weak self] in self?.stopRecordingKeepingMeeting() },
+                        onSecondary: { [weak self] in self?.stopPromptMutedUntilVoice = true })
+    }
+
+    /// Stop without touching the detector: the app may still hold the mic, and re-offering to
+    /// record the same meeting would be noise.
+    private func stopRecordingKeepingMeeting() {
+        controller.stop()
+        declinedApp = activeApp
     }
 
     /// Meeting running, nothing being recorded (declined or the prompt timed out) — say so in the menu.
@@ -136,10 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func toggle() {
         if controller.current != nil {
-            controller.stop()
-            // The meeting itself is still live: remember the refusal instead of resetting the
-            // detector, or the next poll would offer to record again straight away.
-            declinedApp = activeApp
+            stopRecordingKeepingMeeting()
         } else {
             prompt.dismiss()
             controller.start(app: activeApp ?? "manual")
