@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ru.slesarev.transcriber.worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/slesarev_vv/.local/bin/uv</string>
+    <string>run</string>
+    <string>--project</string>
+    <string>/Users/slesarev_vv/Claude/transcriber/worker</string>
+    <string>transcriber</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/slesarev_vv/Claude/transcriber/worker</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>/Users/slesarev_vv/Claude/transcriber/worker.log</string>
+  <key>StandardErrorPath</key><string>/Users/slesarev_vv/Claude/transcriber/worker.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/slesarev_vv/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/slesarev_vv</string>
+  </dict>
+</dict>
+</plist>
