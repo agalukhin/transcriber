@@ -1,0 +1,8 @@
+.env
+sessions/
+.build/
+.venv/
+__pycache__/
+*.pcm
+*.wav
+.DS_Store
