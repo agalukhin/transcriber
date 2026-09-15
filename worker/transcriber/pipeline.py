@@ -50,19 +50,27 @@ class Pipeline:
 
     def step(self) -> bool:
         changed = False
+        cap = max(1, int(self.cfg.sample_rate * self.cfg.read_chunk_s))
         for ch in ("mic", "sys"):
-            audio = self.readers[ch].read_all()
+            audio = self.readers[ch].read_all(max_samples=cap)   # бэклог за сутки не тянем в память целиком
             if audio.size:
                 for u in self.segs[ch].feed(audio):
                     self._handle(ch, u)
                     changed = True
         changed |= self._flush_pending_mic(force=False)
-        self.s.state.mic_offset = self.segs["mic"].boundary()
-        self.s.state.sys_offset = self.segs["sys"].boundary()
+        st = self.s.state
+        offsets = (self.segs["mic"].boundary(), self.segs["sys"].boundary())
+        moved = offsets != (st.mic_offset, st.sys_offset)
+        st.mic_offset, st.sys_offset = offsets
         if changed:
             write_raw(self.cfg, self.s, "идёт запись")
-        self.s.save_state()
+        if changed or moved:
+            self.s.save_state()
         return changed
+
+    def has_backlog(self) -> bool:
+        """Есть ли непрочитанное аудио — step() читает порциями, демон должен продолжать крутить."""
+        return any(r.available() > 0 for r in self.readers.values())
 
     def _sec(self, samples: int) -> float:
         return samples / self.cfg.sample_rate
@@ -98,7 +106,9 @@ class Pipeline:
     def _flush_pending_mic(self, force: bool) -> bool:
         st = self.s.state
         seg = self.segs["sys"]
-        horizon = self._sec(seg.pos)
+        # горизонт — позиция sys-канала; если sys.pcm нет или он отстаёт, ориентируемся на mic,
+        # иначе реплики владельца висят в pending до самой финализации
+        horizon = max(self._sec(seg.pos), self._sec(self.segs["mic"].pos) - self.cfg.echo_wait_s)
         open_start = self._sec(seg.open_start) if seg.open_start is not None else None
         sys_recs = [r for r in st.records if r.channel == "sys"]
         keep: list[Rec] = []
@@ -119,7 +129,7 @@ class Pipeline:
     # ---- finalization -----------------------------------------------------
 
     def finalize(self) -> None:
-        while self.step():
+        while self.step() or self.has_backlog():   # step() читает порциями — дочитываем весь хвост
             pass
         for ch in ("mic", "sys"):
             for u in self.segs[ch].flush():       # recording may have stopped mid-speech
@@ -131,10 +141,11 @@ class Pipeline:
         if len(st.embeddings) >= 2:
             new = recluster(np.asarray(st.embeddings, dtype=np.float32), self.cfg.speaker_similarity)
             st.speaker_of_emb = new
-            last = label(0)
-            for r in sorted(st.records, key=lambda r: r.start):
-                if r.channel != "sys":
-                    continue
+            sys_recs = [r for r in sorted(st.records, key=lambda r: r.start) if r.channel == "sys"]
+            first_emb = next((r for r in sys_recs if r.emb is not None), None)
+            # короткая реплика до первой опознанной наследует её метку, а не «Speaker 1» вслепую
+            last = label(new[first_emb.emb]) if first_emb is not None else label(0)
+            for r in sys_recs:
                 if r.emb is not None:
                     r.speaker = label(new[r.emb])
                     last = r.speaker

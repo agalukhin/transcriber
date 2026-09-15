@@ -25,6 +25,7 @@ class Config:
     min_silence_ms: int = 700
     speech_pad_ms: int = 100
     max_utterance_s: float = 30.0
+    read_chunk_s: float = 30.0      # сколько аудио за один step(), чтобы бэклог не влезал в RAM целиком
     min_embed_s: float = 1.0
     speaker_similarity: float = 0.5
     echo_overlap: float = 0.8

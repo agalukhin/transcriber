@@ -70,3 +70,26 @@ def test_app_label_and_locative_share_one_source():
     assert app_label("kontur.talk") == "Толк"
     assert app_locative("kontur.talk") == "Толке"
     assert app_label("unknown") == "" and app_locative("unknown") == ""
+
+
+def test_paths_are_pinned_after_first_write(vault):
+    cfg = Config(vault_root=vault)
+    s = Session(vault / "s", meta(), State())
+    p1 = write_raw(cfg, s, status_text="идёт запись")
+    n1 = ensure_stub(cfg, s)
+    s.meta.title = "Переименовали встречу на ходу"      # Толк меняет заголовок посреди записи
+    p2 = write_raw(cfg, s, status_text="идёт запись")
+    n2 = ensure_stub(cfg, s)
+    assert p2 == p1 and n2 == n1
+    assert len(list((vault / "Memory/50 · Raw/Local").iterdir())) == 1
+    assert len(list((vault / "Memory/30 · Meetings").iterdir())) == 1
+
+
+def test_n_speakers_counts_sys_speakers_without_embeddings(vault):
+    cfg = Config(vault_root=vault)
+    st = State(records=[Rec("sys", 0.5, 0.8, "Ага.", "Speaker 1", None),
+                        Rec("sys", 1.0, 3.0, "Дальше.", "Speaker 2", 0),
+                        Rec("mic", 3.5, 4.0, "Да.", "Me", None)],
+               speaker_of_emb=[0])
+    s = Session(vault / "s", meta(), st)
+    assert "Говорящих на канале собеседников: 2" in write_raw(cfg, s, status_text="идёт запись").read_text()

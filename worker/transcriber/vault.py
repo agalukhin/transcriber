@@ -110,10 +110,19 @@ def note_path(cfg: Config, meta: Meta) -> Path:
     return cfg.vault_root / cfg.meetings_subdir / note_filename(meta)
 
 
+def pinned_raw_path(cfg: Config, session: Session) -> Path:
+    """Путь фиксируется первой записью: смена meta.title на ходу не должна плодить второй файл."""
+    pinned = session.state.raw_path
+    if pinned and Path(pinned).exists():
+        return Path(pinned)
+    return raw_path(cfg, session.meta)
+
+
 def write_raw(cfg: Config, session: Session, status_text: str) -> Path:
     st = session.state
-    n_speakers = len(set(st.speaker_of_emb)) if st.speaker_of_emb else 0
-    p = raw_path(cfg, session.meta)
+    sys_speakers = {r.speaker for r in st.records if r.channel == "sys"}
+    n_speakers = max(len(set(st.speaker_of_emb)), len(sys_speakers))
+    p = pinned_raw_path(cfg, session)
     p.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(p, render_raw(session.meta, st.records, n_speakers, status_text, cfg.marker_every_s))
     st.raw_path = str(p)
@@ -121,9 +130,10 @@ def write_raw(cfg: Config, session: Session, status_text: str) -> Path:
 
 
 def ensure_stub(cfg: Config, session: Session) -> Path:
-    p = note_path(cfg, session.meta)
+    pinned = session.state.note_path
+    p = Path(pinned) if pinned and Path(pinned).exists() else note_path(cfg, session.meta)
     if not p.exists():
         p.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(p, render_stub(session.meta, raw_path(cfg, session.meta).stem))
+        atomic_write_text(p, render_stub(session.meta, pinned_raw_path(cfg, session).stem))
     session.state.note_path = str(p)
     return p
