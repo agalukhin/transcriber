@@ -39,11 +39,11 @@ enum CoreAudioProps {
         return v as String
     }
 
-    static func getArray<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, of: T.Type) -> [T] {
+    static func getArray<T: FixedWidthInteger>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, of: T.Type) -> [T] {
         var addr = address(selector)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(object, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
-        var items = [T](repeating: unsafeBitCast(0 as UInt32, to: T.self), count: Int(size) / MemoryLayout<T>.size)
+        var items = [T](repeating: T.zero, count: Int(size) / MemoryLayout<T>.size)
         guard AudioObjectGetPropertyData(object, &addr, 0, nil, &size, &items) == noErr else { return [] }
         return items
     }

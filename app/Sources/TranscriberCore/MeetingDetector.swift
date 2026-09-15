@@ -31,6 +31,11 @@ public final class MeetingDetector {
         return nil
     }
 
+    /// Two accepted limitations:
+    /// (a) if the active app switches within a single poll window, `activeApp` keeps the app
+    ///     that was first seen using the mic and does not update to the newer one;
+    /// (b) any watched app touching the mic outside an actual call (e.g. a Zoom mic test)
+    ///     triggers a `.started` event — the user simply declines the prompt.
     public func poll(now: Date) -> MeetingEvent? {
         let using = appUsingMic()
         if activeApp == nil {

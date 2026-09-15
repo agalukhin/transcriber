@@ -6,6 +6,7 @@ public final class PcmWriter {
     private let handle: FileHandle
     private let flushEvery: Int
     private var buffer: [Int16] = []
+    private var closed = false
     public private(set) var samplesWritten = 0
 
     public init(url: URL, flushEvery: Int = 16_000) throws {
@@ -18,6 +19,7 @@ public final class PcmWriter {
     }
 
     public func write(_ samples: [Int16]) {
+        guard !closed else { return }
         buffer.append(contentsOf: samples)
         if buffer.count >= flushEvery {
             flush()
@@ -25,6 +27,7 @@ public final class PcmWriter {
     }
 
     public func flush() {
+        guard !closed else { return }
         guard !buffer.isEmpty else { return }
         let data = buffer.withUnsafeBufferPointer { Data(buffer: $0) }
         handle.write(data)
@@ -34,7 +37,9 @@ public final class PcmWriter {
     }
 
     public func close() {
+        guard !closed else { return }
         flush()
         try? handle.close()
+        closed = true
     }
 }

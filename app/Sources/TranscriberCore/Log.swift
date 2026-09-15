@@ -14,6 +14,7 @@ public final class Log {
 
     public init(file: URL) {
         self.file = file
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
     }
 
     public func info(_ message: String) { write("INFO", message) }

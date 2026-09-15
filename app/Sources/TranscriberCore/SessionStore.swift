@@ -74,7 +74,7 @@ public final class SessionStore {
     private static let isoFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXX"
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxx"
         return f
     }()
 }

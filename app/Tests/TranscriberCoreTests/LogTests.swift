@@ -15,3 +15,16 @@ import Testing
     #expect(lines[1].hasSuffix(" WARN careful"))
     #expect(lines[0].hasPrefix("20"))
 }
+
+@Test func logCreatesMissingParentDirectory() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let file = dir.appendingPathComponent("nested/deeper/t.log")   // parent tree does not exist yet
+    let log = Log(file: file)
+    log.info("first")
+    log.info("second")
+    let text = try String(contentsOf: file, encoding: .utf8)
+    let lines = text.split(separator: "\n")
+    #expect(lines.count == 2)   // both lines survive; fallback branch never silently overwrites
+    #expect(lines[0].hasSuffix(" INFO first"))
+    #expect(lines[1].hasSuffix(" INFO second"))
+}

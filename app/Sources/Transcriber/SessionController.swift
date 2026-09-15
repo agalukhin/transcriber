@@ -54,11 +54,12 @@ final class SessionController {
         capture?.stop()
         if let m = micMixer { micWriter?.write(m.finish()) }
         if let s = sysMixer { sysWriter?.write(s.finish()) }
+        let micSamples = micWriter?.samplesWritten ?? 0
         cleanup()
         do { try dir.requestStop() } catch { log.error("STOP write failed: \(error)") }
         power.release()
         state = .idle
-        log.info("session \(dir.id) stopped; mic \(micWriter?.samplesWritten ?? 0) samples")
+        log.info("session \(dir.id) stopped; mic \(micSamples) samples")
         onStateChange?(state)
     }
 
