@@ -15,7 +15,9 @@
   <key>WorkingDirectory</key><string>/Users/slesarev_vv/Claude/transcriber/worker</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Interactive</string>
+  <!-- ASR грузит машину пачками по 45-90 с: во время звонка воркер должен уступать -->
+  <key>ProcessType</key><string>Background</string>
+  <key>Nice</key><integer>10</integer>
   <key>StandardOutPath</key><string>/Users/slesarev_vv/Library/Logs/transcriber-worker.log</string>
   <key>StandardErrorPath</key><string>/Users/slesarev_vv/Library/Logs/transcriber-worker.log</string>
   <key>EnvironmentVariables</key>
