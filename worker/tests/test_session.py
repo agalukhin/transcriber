@@ -45,3 +45,27 @@ def test_rec_text_none_survives(tmp_path):
     s.state.records.append(Rec("mic", 0.0, 1.0, None, "Me", None))
     s.save_state()
     assert Session.load(d).state.records[0].text is None
+
+
+def test_unknown_keys_in_state_are_ignored(tmp_path):
+    d = make_session(tmp_path)
+    (d / "state.json").write_text(json.dumps({
+        "status": "recording",
+        "mic_offset": 512,
+        "future": 1,
+        "records": [{"channel": "sys", "start": 0.0, "end": 1.0, "text": "a", "speaker": "Speaker 1", "x": 1}],
+        "pending_mic": [],
+    }, ensure_ascii=False))
+    s = Session.load(d)
+    assert s.state.mic_offset == 512
+    assert s.state.records == [Rec("sys", 0.0, 1.0, "a", "Speaker 1", None)]
+
+
+def test_naive_started_at_gets_local_timezone(tmp_path):
+    d = make_session(tmp_path)
+    meta = json.loads((d / "meta.json").read_text())
+    meta["started_at"] = "2026-09-15T14:30:00"
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+    s = Session.load(d)
+    assert s.meta.started_at.tzinfo is not None
+    assert (s.meta.started_at.hour, s.meta.started_at.minute) == (14, 30)

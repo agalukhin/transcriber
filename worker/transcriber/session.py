@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +17,10 @@ class Meta:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Meta":
-        return cls(id=d["id"], started_at=datetime.fromisoformat(d["started_at"]), app=d.get("app", "manual"),
+        started = datetime.fromisoformat(d["started_at"])
+        if started.tzinfo is None:                 # writer omitted the offset — treat as local time
+            started = started.astimezone()
+        return cls(id=d["id"], started_at=started, app=d.get("app", "manual"),
                    title=d.get("title", "") or "", participants=list(d.get("participants") or []))
 
 
@@ -30,6 +33,10 @@ class Rec:
     text: str | None
     speaker: str          # "Me" | "Speaker N"
     emb: int | None = None  # index into State.embeddings
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Rec":
+        return cls(**_known(cls, d))
 
 
 @dataclass
@@ -47,25 +54,31 @@ class State:
 
     @classmethod
     def from_dict(cls, d: dict) -> "State":
-        s = cls(**{k: v for k, v in d.items() if k not in ("records", "pending_mic")})
-        s.records = [Rec(**r) for r in d.get("records", [])]
-        s.pending_mic = [Rec(**r) for r in d.get("pending_mic", [])]
+        s = cls(**{k: v for k, v in _known(cls, d).items() if k not in ("records", "pending_mic")})
+        s.records = [Rec.from_dict(r) for r in d.get("records") or []]
+        s.pending_mic = [Rec.from_dict(r) for r in d.get("pending_mic") or []]
         return s
 
 
+def _known(cls, d: dict) -> dict:
+    """Ignore keys a newer (or older) version wrote — state.json must never block a restart."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in d.items() if k in names}
+
+
 class Session:
-    def __init__(self, dir: Path, meta: Meta, state: State):
-        self.dir = Path(dir)
+    def __init__(self, path: Path, meta: Meta, state: State):
+        self.dir = Path(path)
         self.meta = meta
         self.state = state
 
     @classmethod
-    def load(cls, dir: Path) -> "Session":
-        dir = Path(dir)
-        meta = Meta.from_dict(json.loads((dir / "meta.json").read_text()))
-        state_file = dir / "state.json"
+    def load(cls, path: Path) -> "Session":
+        path = Path(path)
+        meta = Meta.from_dict(json.loads((path / "meta.json").read_text()))
+        state_file = path / "state.json"
         state = State.from_dict(json.loads(state_file.read_text())) if state_file.exists() else State()
-        return cls(dir, meta, state)
+        return cls(path, meta, state)
 
     @property
     def mic_pcm(self) -> Path:
@@ -83,6 +96,10 @@ class Session:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")   # another process must not clobber our tmp
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())                                 # without fsync a power loss leaves an empty file
     os.replace(tmp, path)

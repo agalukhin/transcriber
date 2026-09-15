@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parents[2]  # ~/Claude/transcriber
+log = logging.getLogger("transcriber")
+
+# ~/Claude/transcriber; TRANSCRIBER_ROOT lets tests and a second checkout point elsewhere
+ROOT = Path(os.environ.get("TRANSCRIBER_ROOT", Path(__file__).resolve().parents[2]))
 
 
 @dataclass
@@ -41,6 +46,9 @@ def load_config(yaml_path: Path | None = None, glossary_path: Path | None = None
     data = yaml.safe_load(yaml_path.read_text()) if yaml_path.exists() else {}
     data = data or {}
     known = {f.name for f in fields(Config)}
+    unknown = sorted(set(data) - known)
+    if unknown:
+        log.warning("config.yaml: unknown keys ignored: %s", ", ".join(unknown))
     kwargs = {k: v for k, v in data.items() if k in known}
     for key in ("vault_root", "sessions_dir"):
         if key in kwargs:
