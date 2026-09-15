@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pollQueue = DispatchQueue(label: "transcriber.poll")
     private var activeApp: String?
     private var declinedApp: String?   // «Не сейчас» for this meeting: don't ask again until it ends
+    /// Last logged set of mic holders; `pollQueue` only. `nil` = nothing logged yet.
+    private var lastMicHolders: Set<String>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.info("app launched")
@@ -82,10 +84,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func poll() {
         pollQueue.async { [weak self] in
             guard let self else { return }
-            let event = self.detector.poll(now: Date())
+            let processes = AudioProcesses.list()
+            self.logMicHolders(processes)
+            let event = self.detector.poll(now: Date(), processes: processes)
             let active = self.detector.activeApp
             DispatchQueue.main.async { self.handle(event, activeApp: active) }
         }
+    }
+
+    /// Who is holding the mic right now — the only way to learn which app to watch after a
+    /// meeting goes undetected. Runs every 2 s, so it logs only when the set changes.
+    /// `pollQueue` only.
+    private func logMicHolders(_ processes: [AudioProcess]) {
+        let holders = Set(processes
+            .filter { $0.isRunningInput && !$0.bundleID.hasPrefix(AudioProcesses.ownBundleID) }
+            .map { $0.bundleID.isEmpty ? "pid:\($0.pid)" : $0.bundleID })
+        guard holders != lastMicHolders else { return }
+        lastMicHolders = holders
+        let list = holders.isEmpty ? "none" : "[" + holders.sorted().joined(separator: ", ") + "]"
+        log.info("mic holders: \(list)")
     }
 
     private func handle(_ event: MeetingEvent?, activeApp: String?) {
@@ -95,8 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .started(let app):
             log.info("meeting detected in \(app)")
             if controller.current != nil || declinedApp == app { return }
-            let name = app == TalkInspector.bundleID ? "Толке" : "Zoom"
-            prompt.show(appName: name,
+            prompt.show(appName: AppDelegate.promptName(for: app),
                         onRecord: { [weak self] in self?.controller.start(app: app) },
                         onSkip: { [weak self] in self?.declinedApp = app })
         case .ended:
@@ -105,6 +121,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             prompt.dismiss()
             controller.stop()
             render(controller.state)   // drops the «встреча идёт» hint
+        }
+    }
+
+    /// A call in a browser tab (Толк web, Meet) is indistinguishable from any other tab from
+    /// the outside, so the prompt names the browser rather than a meeting app.
+    static func promptName(for app: String) -> String {
+        switch app {
+        case TalkInspector.bundleID: return "Толке"
+        case "us.zoom": return "Zoom"
+        default: return "браузере"
         }
     }
 

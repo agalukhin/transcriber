@@ -34,10 +34,18 @@ private func proc(_ bundle: String, input: Bool) -> AudioProcess {
     #expect(d.poll(now: t0 + 103) == nil)
 }
 
-@Test func unwatchedAppsAreIgnoredAndChromeNotWatchedByDefault() {
-    let d = MeetingDetector(lister: { [proc("com.google.Chrome.helper", input: true)] })
+@Test func unwatchedAppsAreIgnored() {
+    let d = MeetingDetector(lister: { [proc("com.apple.Music", input: true)] })
     #expect(d.poll(now: Date()) == nil)
-    #expect(MeetingDetector.defaultApps == ["kontur.talk", "us.zoom"])
+}
+
+/// The first missed meeting ran in a browser tab (Толк web), so browsers are watched too —
+/// their audio helper is what actually holds the mic, hence the prefix match.
+@Test func browsersAreWatchedByDefault() {
+    #expect(MeetingDetector.defaultApps == ["kontur.talk", "us.zoom", "com.google.Chrome",
+                                            "com.microsoft.edgemac", "com.apple.Safari"])
+    let d = MeetingDetector(lister: { [proc("com.google.Chrome.helper", input: true)] })
+    #expect(d.poll(now: Date()) == .started(app: "com.google.Chrome"))
 }
 
 @Test func resetForcesIdle() {
