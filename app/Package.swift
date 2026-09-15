@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Transcriber",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.2")],
     targets: [
         .target(name: "TranscriberCore", path: "Sources/TranscriberCore"),
         .executableTarget(name: "Transcriber", dependencies: ["TranscriberCore"], path: "Sources/Transcriber"),
