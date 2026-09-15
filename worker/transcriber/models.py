@@ -5,12 +5,13 @@ from typing import Callable
 
 import numpy as np
 
+from .asr import Segment
 from .config import Config
 
 
 @dataclass
 class Models:
-    asr: Callable[[np.ndarray, str], str]
+    asr: Callable[[np.ndarray, str], list[Segment]]
     embed: Callable[[np.ndarray], np.ndarray]
     prob_factory: Callable[[], Callable[[np.ndarray], float]]
 
@@ -35,7 +36,7 @@ def load_models(cfg: Config) -> Models:
     from .speakers import Embedder
 
     return Models(
-        asr=Transcriber(cfg.whisper_model, cfg.language, cfg.hallucinations),
+        asr=Transcriber(cfg.whisper_model, cfg.language, cfg.hallucinations, cfg.sample_rate),
         embed=Embedder(cfg.embedding_model, cfg.sample_rate),
         prob_factory=silero_prob_factory(cfg.sample_rate),
     )

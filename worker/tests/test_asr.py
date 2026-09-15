@@ -1,4 +1,4 @@
-from transcriber.asr import build_prompt, clean_text
+from transcriber.asr import Segment, build_prompt, clean_text
 
 
 def test_clean_strips_hallucinations_and_space():
@@ -57,41 +57,53 @@ def _transcriber(monkeypatch, result):
     return Transcriber("model", "ru", ["Продолжение следует"]), fake
 
 
-def _seg(text, no_speech=0.0, logprob=-0.3):
-    return {"text": text, "no_speech_prob": no_speech, "avg_logprob": logprob}
+def _seg(text, start=0.0, end=1.0, no_speech=0.0, logprob=-0.3):
+    return {"text": text, "start": start, "end": end, "no_speech_prob": no_speech, "avg_logprob": logprob}
 
 
-def test_transcriber_keeps_result_text_when_all_segments_are_solid(monkeypatch):
+def test_transcriber_returns_a_segment_per_whisper_segment(monkeypatch):
     import numpy as np
 
-    result = {"text": " Первое. Второе.", "segments": [_seg(" Первое."), _seg(" Второе.")]}
+    result = {"text": " Первое. Второе.", "segments": [
+        _seg(" Первое.", 0.0, 1.5), _seg(" Второе.", 2.0, 3.5)]}
     t, fake = _transcriber(monkeypatch, result)
-    assert t(np.zeros(16000, dtype="float32"), "промпт") == "Первое. Второе."
+    got = t(np.zeros(16000, dtype="float32"), "промпт")
+    assert got == [Segment(0.0, 1.5, "Первое."), Segment(2.0, 3.5, "Второе.")]
     assert fake.kwargs["initial_prompt"] == "промпт"
+    assert fake.kwargs["condition_on_previous_text"] is True   # блок длинный, контекст внутри него нужен
 
 
 def test_transcriber_drops_silent_and_low_confidence_segments(monkeypatch):
     import numpy as np
 
-    result = {"text": " Первое. Тишина. Бред. Второе.", "segments": [
-        _seg(" Первое."),
-        _seg(" Тишина.", no_speech=0.9),
-        _seg(" Бред.", logprob=-1.5),
-        _seg(" Второе."),
+    result = {"text": "", "segments": [
+        _seg(" Первое.", 0.0, 1.0),
+        _seg(" Тишина.", 1.0, 2.0, no_speech=0.9),
+        _seg(" Бред.", 2.0, 3.0, logprob=-1.5),
+        _seg(" Второе.", 3.0, 4.0),
     ]}
     t, _ = _transcriber(monkeypatch, result)
-    assert t(np.zeros(16000, dtype="float32")) == "Первое. Второе."
+    assert [s.text for s in t(np.zeros(16000, dtype="float32"))] == ["Первое.", "Второе."]
 
 
-def test_transcriber_falls_back_to_text_without_segments(monkeypatch):
+def test_transcriber_cleans_hallucinations_and_drops_empty_segments(monkeypatch):
+    import numpy as np
+
+    result = {"text": "", "segments": [
+        _seg(" Продолжение следует", 0.0, 1.0), _seg(" Есть текст.", 1.0, 2.0)]}
+    t, _ = _transcriber(monkeypatch, result)
+    assert [s.text for s in t(np.zeros(16000, dtype="float32"))] == ["Есть текст."]
+
+
+def test_transcriber_falls_back_to_one_segment_over_the_whole_block(monkeypatch):
     import numpy as np
 
     t, _ = _transcriber(monkeypatch, {"text": " Есть текст. Продолжение следует"})
-    assert t(np.zeros(16000, dtype="float32")) == "Есть текст."
+    assert t(np.zeros(32000, dtype="float32")) == [Segment(0.0, 2.0, "Есть текст.")]
 
 
-def test_transcriber_survives_segments_without_quality_fields(monkeypatch):
+def test_transcriber_survives_segments_without_time_and_quality_fields(monkeypatch):
     import numpy as np
 
     t, _ = _transcriber(monkeypatch, {"text": " Текст.", "segments": [{"text": " Текст."}]})
-    assert t(np.zeros(16000, dtype="float32")) == "Текст."
+    assert t(np.zeros(16000, dtype="float32")) == [Segment(0.0, 0.0, "Текст.")]

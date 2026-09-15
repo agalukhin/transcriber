@@ -6,19 +6,21 @@ from typing import Callable
 
 import numpy as np
 
-from .asr import build_prompt
+from .asr import Segment, build_prompt
+from .blocks import Block, BlockBuilder
 from .config import Config
 from .echo import is_echo
 from .pcm import PcmReader, read_range
 from .quality import junk_reason, prompt_vocabulary
 from .session import Rec, Session, State
 from .speakers import OnlineClusterer, absorb_small_clusters, label, recluster
-from .vad import Segmenter, Utterance
+from .vad import Segmenter
 from .vault import ensure_stub, write_raw
 
 log = logging.getLogger("transcriber")
 
 PROMPT_LEAK = "prompt leak"     # имя правила из quality.junk_reason, которое лечится повтором
+CARRY_MAX = 200                 # столько символов прошлого блока канала уносим в следующий промпт
 
 
 def recluster_records(cfg: Config, st: State) -> None:
@@ -42,7 +44,7 @@ def recluster_records(cfg: Config, st: State) -> None:
         else:
             r.speaker = last
 
-Asr = Callable[[np.ndarray, str], str]
+Asr = Callable[[np.ndarray, str], list[Segment]]
 Embed = Callable[[np.ndarray], np.ndarray]
 ProbFactory = Callable[[], Callable[[np.ndarray], float]]
 
@@ -63,6 +65,11 @@ class Pipeline:
             preroll = read_range(pcm, off - pad, off) if off > 0 and pad > 0 else None
             self.segs[ch] = Segmenter(prob_factory(), cfg.sample_rate, cfg.vad_threshold, cfg.min_silence_ms,
                                       cfg.speech_pad_ms, cfg.max_utterance_s, start_sample=off, preroll=preroll)
+        self.builders: dict[str, BlockBuilder] = {
+            ch: BlockBuilder(cfg.sample_rate, cfg.block_min_s, cfg.block_max_s,
+                             cfg.block_gap_s, cfg.block_gap_keep_s, cfg.block_idle_s)
+            for ch in ("mic", "sys")}
+        self.carry = {"mic": "", "sys": ""}   # хвост прошлого блока канала; после перезапуска пуст
         self.clusterer = OnlineClusterer.from_history(cfg.speaker_similarity, st.embeddings, st.speaker_of_emb)
         self.prompt = build_prompt(session.meta.participants, cfg.glossary,
                                    include_participants=bool(session.meta.participants))
@@ -80,13 +87,18 @@ class Pipeline:
         cap = max(1, int(self.cfg.sample_rate * self.cfg.read_chunk_s))
         for ch in ("mic", "sys"):
             audio = self.readers[ch].read_all(max_samples=cap)   # бэклог за сутки не тянем в память целиком
+            blocks: list[Block] = []
             if audio.size:
                 for u in self.segs[ch].feed(audio):
-                    self._handle(ch, u)
-                    changed = True
+                    blocks.extend(self.builders[ch].add(u))
+            # позиция чтения — «сколько времени уже прошло»: по ней блок закрывается по простою
+            blocks.extend(self.builders[ch].idle(self.readers[ch].offset))
+            for b in blocks:
+                self._handle_block(ch, b)
+                changed = True
         changed |= self._flush_pending_mic(force=False)
         st = self.s.state
-        offsets = (self.segs["mic"].boundary(), self.segs["sys"].boundary())
+        offsets = (self._resume_point("mic"), self._resume_point("sys"))
         moved = offsets != (st.mic_offset, st.sys_offset)
         st.mic_offset, st.sys_offset = offsets
         if changed:
@@ -99,14 +111,30 @@ class Pipeline:
         """Есть ли непрочитанное аудио — step() читает порциями, демон должен продолжать крутить."""
         return any(r.available() > 0 for r in self.readers.values())
 
+    def _resume_point(self, ch: str) -> int:
+        """Точка продолжения после падения: начало открытого блока, иначе граница сегментатора.
+
+        Заново распознаётся максимум один блок, и дубля не будет: всё, что было до этой точки,
+        уже лежит в records.
+        """
+        open_start = self.builders[ch].open_start
+        return open_start if open_start is not None else self.segs[ch].boundary()
+
     def _sec(self, samples: int) -> float:
         return samples / self.cfg.sample_rate
 
-    def _transcribe(self, u: Utterance, prompt: str | None = None) -> str | None:
+    def _prompt_for(self, ch: str) -> str:
+        """Термины плюс хвост прошлого блока этого канала — штатный способ whisper тянуть контекст."""
+        tail = self.carry.get(ch, "")
+        if not (self.cfg.carry_context and tail):
+            return self.prompt
+        return f"{self.prompt} … {tail[-CARRY_MAX:]}".strip()
+
+    def _transcribe(self, block: Block, prompt: str) -> list[Segment] | None:
         try:
-            return self.asr(u.audio, self.prompt if prompt is None else prompt)
+            return self.asr(block.audio, prompt)
         except Exception as e:  # noqa: BLE001 — any model failure becomes a marker in the transcript
-            msg = f"asr failed at {self._sec(u.start):.1f}-{self._sec(u.end):.1f}: {e!r}"
+            msg = f"asr failed at {self._sec(block.start):.1f}-{self._sec(block.end):.1f}: {e!r}"
             log.warning(msg)
             self.s.state.errors.append(msg)
             return None
@@ -114,36 +142,54 @@ class Pipeline:
     def _reason(self, text: str | None) -> str | None:
         return junk_reason(text, self.prompt_words, self.cfg.language) if text else None
 
-    def _drop_junk(self, text: str | None, u: Utterance) -> str | None:
-        """Галлюцинация — это не «не распознано», а пустая реплика: в транскрипте её нет.
+    def _retry_leaky_block(self, block: Block, segments: list[Segment], prompt: str) -> list[Segment]:
+        """Если промпт пересказан в половине сегментов и больше — блок переспрашиваем целиком без промпта.
 
-        Пересказ промпта — исключение: под ним обычно живая речь, поэтому реплику
-        переспрашиваем у модели без промпта и гасим, только если утечка повторилась.
+        Под пересказом обычно живая речь, а решать посегментно нельзя: без промпта модель
+        нарежет блок иначе, и склеить две нарезки в одну ленту не выйдет.
         """
-        reason = self._reason(text)
-        if reason is None:
-            return text
-        if reason == PROMPT_LEAK and self.prompt:
-            log.info("retry without prompt %.1f-%.1f: %s",
-                     self._sec(u.start), self._sec(u.end), (text or "")[:60])
-            retry = self._transcribe(u, prompt="")
-            retry_reason = self._reason(retry)
-            if retry and retry_reason is None:
-                log.info("retry kept %.1f-%.1f: %s", self._sec(u.start), self._sec(u.end), retry)
-                return retry
-            text, reason = retry or text, retry_reason or reason
-        log.info("dropped (%s) %.1f-%.1f: %s", reason, self._sec(u.start), self._sec(u.end), text)
-        return ""
+        if not (prompt and segments):
+            return segments
+        leaks = sum(1 for s in segments if self._reason(s.text) == PROMPT_LEAK)
+        if leaks * 2 < len(segments):
+            return segments
+        log.info("retry without prompt %.1f-%.1f: %s", self._sec(block.start), self._sec(block.end),
+                 segments[0].text[:60])
+        retry = self._transcribe(block, "")
+        return retry if retry is not None else segments
 
-    def _handle(self, ch: str, u: Utterance) -> None:
-        text = self._drop_junk(self._transcribe(u), u)
-        rec = Rec(channel=ch, start=self._sec(u.start), end=self._sec(u.end), text=text, speaker="Me", emb=None)
+    def _handle_block(self, ch: str, block: Block) -> None:
+        prompt = self._prompt_for(ch)
+        segments = self._transcribe(block, prompt)
+        if segments is None:
+            self._place(ch, Rec(channel=ch, start=self._sec(block.start), end=self._sec(block.end),
+                                text=None, speaker="Me", emb=None), block, None)
+            return
+        kept: list[str] = []
+        for seg in self._retry_leaky_block(block, segments, prompt):
+            start = block.map_to_original(seg.start)
+            end = max(start, block.map_to_original(seg.end))
+            text = seg.text
+            reason = self._reason(text)
+            if reason:
+                # Галлюцинация — это не «не распознано», а пустая реплика: в транскрипте её нет.
+                log.info("dropped (%s) %.1f-%.1f: %s", reason, start, end, text)
+                text = ""
+            else:
+                kept.append(text)
+            self._place(ch, Rec(channel=ch, start=start, end=end, text=text, speaker="Me", emb=None), block, seg)
+        if self.cfg.carry_context:
+            self.carry[ch] = " ".join(kept)[-CARRY_MAX:]
+
+    def _place(self, ch: str, rec: Rec, block: Block, seg: Segment | None) -> None:
+        """Реплику микрофона — в очередь на эхо-проверку, реплику собеседников — с меткой говорящего."""
         if ch == "mic":
             self.s.state.pending_mic.append(rec)
             return
         st = self.s.state
-        if self._sec(u.samples) >= self.cfg.min_embed_s:
-            emb = self.embed(u.audio)
+        audio = self._segment_audio(block, seg) if seg is not None else np.zeros(0, dtype=np.float32)
+        if len(audio) >= int(self.cfg.min_embed_s * self.cfg.sample_rate):
+            emb = self.embed(audio)
             idx = self.clusterer.assign(emb)
             st.embeddings.append([float(x) for x in emb])
             st.speaker_of_emb.append(idx)
@@ -154,13 +200,21 @@ class Pipeline:
             rec.speaker = self.last_sys_speaker
         st.records.append(rec)
 
+    def _segment_audio(self, block: Block, seg: Segment) -> np.ndarray:
+        sr = self.cfg.sample_rate
+        return block.audio[max(0, int(seg.start * sr)):int(seg.end * sr)]
+
+    def _sys_open_start(self) -> float | None:
+        """Начало самого раннего незакрытого куска sys: до него mic-реплику судить об эхе рано."""
+        open_starts = [x for x in (self.builders["sys"].open_start, self.segs["sys"].open_start) if x is not None]
+        return self._sec(min(open_starts)) if open_starts else None
+
     def _flush_pending_mic(self, force: bool) -> bool:
         st = self.s.state
-        seg = self.segs["sys"]
         # горизонт — позиция sys-канала; если sys.pcm нет или он отстаёт, ориентируемся на mic,
         # иначе реплики владельца висят в pending до самой финализации
-        horizon = max(self._sec(seg.pos), self._sec(self.segs["mic"].pos) - self.cfg.echo_wait_s)
-        open_start = self._sec(seg.open_start) if seg.open_start is not None else None
+        horizon = max(self._sec(self.segs["sys"].pos), self._sec(self.segs["mic"].pos) - self.cfg.echo_wait_s)
+        open_start = self._sys_open_start()
         sys_recs = [r for r in st.records if r.channel == "sys"]
         keep: list[Rec] = []
         changed = False
@@ -184,10 +238,13 @@ class Pipeline:
         while self.step() or self.has_backlog():   # step() читает порциями — дочитываем весь хвост
             pass
         for ch in ("mic", "sys"):
-            for u in self.segs[ch].flush():       # recording may have stopped mid-speech
-                self._handle(ch, u)
-        self.s.state.mic_offset = self.segs["mic"].boundary()   # flushed audio must not be re-read
-        self.s.state.sys_offset = self.segs["sys"].boundary()
+            for u in self.segs[ch].flush():        # recording may have stopped mid-speech
+                for b in self.builders[ch].add(u):
+                    self._handle_block(ch, b)
+            for b in self.builders[ch].flush():    # и недобранный блок уходит в ASR как есть
+                self._handle_block(ch, b)
+        self.s.state.mic_offset = self._resume_point("mic")   # flushed audio must not be re-read
+        self.s.state.sys_offset = self._resume_point("sys")
         self._flush_pending_mic(force=True)
         st = self.s.state
         recluster_records(self.cfg, st)

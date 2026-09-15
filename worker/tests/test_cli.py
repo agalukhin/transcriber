@@ -39,8 +39,8 @@ def test_from_wav_runs_full_pipeline(vault, tmp_path):
 def test_daemon_once_processes_and_finalizes(vault, tmp_path):
     sessions = tmp_path / "sessions"
     d = make_session(sessions)
-    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
-    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
     cfg = Config(vault_root=vault, sessions_dir=sessions)
     dm = daemon.Daemon(cfg, models=fake_models())
     assert dm.once() is True
@@ -137,8 +137,8 @@ def test_daemon_backs_off_broken_session_and_keeps_others(vault, tmp_path, caplo
     broken.mkdir(parents=True)
     (broken / "meta.json").write_text("{ это не json")
     d = make_session(sessions)
-    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
-    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
     cfg = Config(vault_root=vault, sessions_dir=sessions)
     dm = daemon.Daemon(cfg, models=fake_models())
     for _ in range(5):
@@ -158,8 +158,8 @@ def test_daemon_forgets_vanished_and_externally_finalized_sessions(vault, tmp_pa
 
     sessions = tmp_path / "sessions"
     d = make_session(sessions)
-    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
-    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
     cfg = Config(vault_root=vault, sessions_dir=sessions)
     dm = daemon.Daemon(cfg, models=fake_models())
     dm.once()
@@ -171,8 +171,8 @@ def test_daemon_forgets_vanished_and_externally_finalized_sessions(vault, tmp_pa
     assert d not in dm.pipes
 
     d2 = make_session(sessions, session_id="2026-09-15-1500", title="Вторая")
-    (d2 / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
-    (d2 / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    (d2 / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d2 / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
     dm.once()
     assert d2 in dm.pipes
     shutil.rmtree(d2)
@@ -184,8 +184,8 @@ def test_daemon_creates_vault_files_before_loading_models(vault, tmp_path, monke
     """Клик «открыть заметку» в приложении не должен ждать 10 секунд загрузки моделей."""
     sessions = tmp_path / "sessions"
     d = make_session(sessions)
-    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
-    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
     cfg = Config(vault_root=vault, sessions_dir=sessions)
 
     def boom(_cfg):
@@ -204,8 +204,8 @@ def test_daemon_creates_vault_files_before_loading_models(vault, tmp_path, monke
 def test_daemon_does_not_rewrite_vault_files_for_a_resumed_session(vault, tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"
     d = make_session(sessions)
-    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
-    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
     cfg = Config(vault_root=vault, sessions_dir=sessions)
     daemon.Daemon(cfg, models=fake_models()).once()
     raw = Path(json.loads((d / "state.json").read_text())["raw_path"])

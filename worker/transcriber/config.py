@@ -25,6 +25,12 @@ class Config:
     min_silence_ms: int = 700
     speech_pad_ms: int = 100
     max_utterance_s: float = 30.0
+    block_min_s: float = 45.0        # короче блок не закрываем: whisper любит окно ~30 с и контекст в нём
+    block_max_s: float = 90.0        # длиннее не копим, иначе текст ждёт слишком долго
+    block_gap_s: float = 1.5         # пауза, по которой блок режется, когда минимум набран
+    block_gap_keep_s: float = 0.5    # сколько тишины оставляем в склейке от реальной паузы
+    block_idle_s: float = 4.0        # тишина после последней реплики — закрываем блок, не ждём
+    carry_context: bool = True       # хвост прошлого блока канала уходит в промпт следующего
     read_chunk_s: float = 30.0      # сколько аудио за один step(), чтобы бэклог не влезал в RAM целиком
     min_embed_s: float = 1.0
     speaker_similarity: float = 0.3

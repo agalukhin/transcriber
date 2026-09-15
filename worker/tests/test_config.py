@@ -58,3 +58,17 @@ def test_shipped_yaml_matches_tuned_defaults():
     data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
     assert data["speaker_similarity"] == 0.3
     assert data["echo_strong_similarity"] == 0.8
+
+
+def test_block_defaults_and_shipped_yaml_agree(tmp_path):
+    import yaml as _yaml
+
+    from transcriber.config import ROOT
+
+    cfg = load_config(yaml_path=tmp_path / "missing.yaml", glossary_path=tmp_path / "missing.txt")
+    assert (cfg.block_min_s, cfg.block_max_s) == (45.0, 90.0)
+    assert (cfg.block_gap_s, cfg.block_gap_keep_s, cfg.block_idle_s) == (1.5, 0.5, 4.0)
+    assert cfg.carry_context is True
+    data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
+    assert data["block_min_s"] == 45 and data["block_max_s"] == 90
+    assert data["block_gap_s"] == 1.5 and data["carry_context"] is True

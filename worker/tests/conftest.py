@@ -5,8 +5,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from transcriber.asr import Segment
 
 SR = 16000
+FRAME = 160          # 10 мс — сетка, по которой FakeAsr ищет границы речи в блоке
+BURST_GAP_S = 0.3    # столько тишины разделяет два всплеска речи
 
 
 def tone(seconds: float, freq: float = 440.0, amp: float = 0.3, sr: int = SR) -> np.ndarray:
@@ -27,19 +30,48 @@ def fake_prob(chunk: np.ndarray) -> float:
     return 1.0 if float(np.abs(chunk).max()) > 0.05 else 0.0
 
 
+def bursts(audio: np.ndarray, sr: int = SR, frame: int = FRAME,
+           gap_s: float = BURST_GAP_S) -> list[tuple[int, int]]:
+    """Границы всплесков речи в склейке — тот же порог, что у fake_prob, но по всему блоку."""
+    loud = [float(np.abs(audio[i * frame:(i + 1) * frame]).max()) > 0.05 for i in range(len(audio) // frame)]
+    gap = max(1, int(round(gap_s * sr / frame)))
+    out: list[tuple[int, int]] = []
+    start = end = None
+    silent = 0
+    for i, is_loud in enumerate(loud):
+        if is_loud:
+            start = i if start is None else start
+            end = i + 1
+            silent = 0
+        elif start is not None:
+            silent += 1
+            if silent >= gap:
+                out.append((start * frame, end * frame))
+                start = end = None
+    if start is not None:
+        out.append((start * frame, end * frame))
+    return out
+
+
 class FakeAsr:
-    """Returns a label derived from the dominant frequency so tests can tell utterances apart."""
+    """Сегмент на каждый всплеск речи в блоке; текст — по доминирующей частоте всплеска."""
 
-    def __init__(self, fail_on: set[int] | None = None):
+    def __init__(self, fail_on: set[int] | None = None, texts: dict[int, str] | None = None):
         self.fail_on = fail_on or set()
-        self.calls: list[tuple[int, str]] = []
+        self.texts = texts or {}
+        self.calls: list[tuple[int, str]] = []    # (частота, промпт) на каждый всплеск
+        self.prompts: list[str] = []              # промпт на каждый блок
 
-    def __call__(self, audio: np.ndarray, prompt: str = "") -> str:
-        f = dominant_freq(audio)
-        self.calls.append((f, prompt))
-        if f in self.fail_on:
-            raise RuntimeError("asr boom")
-        return f"tone{f}"
+    def __call__(self, audio: np.ndarray, prompt: str = "") -> list[Segment]:
+        self.prompts.append(prompt)
+        out: list[Segment] = []
+        for a, b in bursts(audio):
+            f = dominant_freq(audio[a:b])
+            self.calls.append((f, prompt))
+            if f in self.fail_on:
+                raise RuntimeError("asr boom")
+            out.append(Segment(a / SR, b / SR, self.texts.get(f, f"tone{f}")))
+        return out
 
 
 def dominant_freq(audio: np.ndarray, sr: int = SR) -> int:

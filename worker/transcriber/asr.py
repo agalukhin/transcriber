@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -31,34 +32,52 @@ def build_prompt(participants: list[str], glossary: list[str], include_participa
     return prompt if len(prompt) <= PROMPT_MAX else prompt[:PROMPT_MAX - 1].rsplit(",", 1)[0] + "."
 
 
-def join_segments(result: dict) -> str:
-    """Текст без сегментов, которым сама модель не верит; если чистить нечего — исходный text."""
-    segments = result.get("segments") or []
-    text = result.get("text", "")
-    if not segments:
-        return text
-    kept = [s for s in segments
+@dataclass
+class Segment:
+    """Кусок блока, как его нарезал whisper. Секунды — от начала блока, не от начала встречи."""
+    start: float
+    end: float
+    text: str
+
+
+def kept_segments(result: dict) -> list[dict]:
+    """Сегменты без тех, которым сама модель не верит."""
+    return [s for s in (result.get("segments") or [])
             if float(s.get("no_speech_prob", 0.0) or 0.0) <= NO_SPEECH_MAX
             and float(s.get("avg_logprob", 0.0) or 0.0) >= LOGPROB_MIN]
-    return text if len(kept) == len(segments) else "".join(s.get("text", "") for s in kept)
 
 
 class Transcriber:
-    def __init__(self, model_name: str, language: str, hallucinations: list[str]):
+    def __init__(self, model_name: str, language: str, hallucinations: list[str], sample_rate: int = 16000):
         import mlx_whisper
 
         self.mlx_whisper = mlx_whisper
         self.model_name = model_name
         self.language = language
         self.hallucinations = hallucinations
+        self.sample_rate = sample_rate
 
-    def __call__(self, audio: np.ndarray, prompt: str = "") -> str:
+    def __call__(self, audio: np.ndarray, prompt: str = "") -> list[Segment]:
+        """Блок на 45-90 с → сегменты с временами внутри блока.
+
+        ``condition_on_previous_text`` включён: внутри блока это тот самый контекст,
+        ради которого реплики и склеиваются, а утечка предыдущего текста ограничена блоком.
+        """
         result = self.mlx_whisper.transcribe(
             np.ascontiguousarray(audio, dtype=np.float32),
             path_or_hf_repo=self.model_name,
             language=self.language,
             initial_prompt=prompt or None,
             fp16=True,
-            condition_on_previous_text=False,
+            condition_on_previous_text=True,
         )
-        return clean_text(join_segments(result), self.hallucinations)
+        segments = kept_segments(result)
+        if not (result.get("segments") or []):
+            text = clean_text(result.get("text", ""), self.hallucinations)
+            return [Segment(0.0, len(audio) / self.sample_rate, text)] if text else []
+        out = []
+        for s in segments:
+            text = clean_text(s.get("text", ""), self.hallucinations)
+            if text:
+                out.append(Segment(float(s.get("start", 0.0) or 0.0), float(s.get("end", 0.0) or 0.0), text))
+        return out
