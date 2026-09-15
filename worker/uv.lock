@@ -2994,6 +2994,7 @@ dependencies = [
     { name = "pyannote-audio" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "scipy" },
     { name = "silero-vad" },
 ]
 
@@ -3009,6 +3010,7 @@ requires-dist = [
     { name = "pyannote-audio", specifier = ">=3.3" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "scipy", specifier = ">=1.18.1" },
     { name = "silero-vad", specifier = ">=6.2.1" },
 ]
 
