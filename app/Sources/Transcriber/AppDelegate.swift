@@ -20,6 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pollQueue = DispatchQueue(label: "transcriber.poll")
     private var activeApp: String?
     private var declinedApp: String?   // «Не сейчас» for this meeting: don't ask again until it ends
+    /// Browser holding the mic with nothing meeting-like open yet — we keep looking instead of
+    /// asking about a YouTube tab. Main thread only.
+    private var pendingBrowserApp: String?
+    private var pendingTicks = 0
+    /// Ticks are 2 s, so five of them is the ~10 s re-check of the browser's tabs.
+    static let browserRecheckTicks = 5
     /// Last logged set of mic holders; `pollQueue` only. `nil` = nothing logged yet.
     private var lastMicHolders: Set<String>?
 
@@ -76,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.checkHealth(now: Date())
         watchSilence(now: Date())
         showIdleMeetingHint()
+        recheckPendingBrowser()
         poll()
     }
 
@@ -152,16 +159,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .started(let app):
             log.info("meeting detected in \(app)")
             if controller.current != nil || declinedApp == app { return }
-            prompt.show(appName: AppDelegate.promptName(for: app),
-                        onRecord: { [weak self] in self?.controller.start(app: app) },
-                        onSkip: { [weak self] in self?.declinedApp = app })
+            guard AppDelegate.browserApps.contains(app) else {
+                prompt.show(appName: AppDelegate.promptName(for: app),
+                            onRecord: { [weak self] in self?.controller.start(app: app) },
+                            onSkip: { [weak self] in self?.declinedApp = app })
+                return
+            }
+            askBrowser(app: app)
         case .ended:
             log.info("meeting ended")
             declinedApp = nil
+            pendingBrowserApp = nil
+            pendingTicks = 0
             prompt.dismiss()
             controller.stop()
             render(controller.state)   // drops the «встреча идёт» hint
         }
+    }
+
+    /// Chrome holds the mic for minutes after a call and any site can take it, so a browser on the
+    /// mic is not yet a meeting: ask the browser what it has open, and only prompt on a call tab.
+    private func askBrowser(app: String) {
+        pollQueue.async { [weak self] in
+            let info = BrowserTabs.meetingInfo(forBrowser: app)
+            DispatchQueue.main.async {
+                guard let self, self.controller.current == nil, self.declinedApp != app else { return }
+                guard let info else {
+                    if self.pendingBrowserApp != app {
+                        self.log.info("browser mic without a meeting tab, waiting")
+                    }
+                    self.pendingBrowserApp = app
+                    return
+                }
+                self.pendingBrowserApp = nil
+                self.pendingTicks = 0
+                self.log.info("browser meeting tab: '\(info.title)'")
+                self.prompt.show(PromptPanel.meeting(appName: AppDelegate.promptName(for: app),
+                                                     title: info.title),
+                                 onPrimary: { [weak self] in self?.controller.start(app: app, info: info) },
+                                 onSecondary: { [weak self] in
+                                     self?.declinedApp = app
+                                     self?.pendingBrowserApp = nil
+                                 })
+            }
+        }
+    }
+
+    /// The call tab usually appears a beat after the mic does (and the Automation permission may
+    /// only be granted mid-meeting), so keep re-asking while the browser holds the mic.
+    private func recheckPendingBrowser() {
+        guard let app = pendingBrowserApp else {
+            pendingTicks = 0
+            return
+        }
+        guard controller.current == nil, declinedApp != app, activeApp == app, !prompt.isShowing else {
+            pendingBrowserApp = nil
+            pendingTicks = 0
+            return
+        }
+        pendingTicks += 1
+        guard pendingTicks >= AppDelegate.browserRecheckTicks else { return }
+        pendingTicks = 0
+        askBrowser(app: app)
+    }
+
+    /// Everything watched that is not a native meeting app: for those the tabs are the only
+    /// source of a title, and the only way to tell a call from any other site.
+    static let browserApps = MeetingDetector.defaultApps.filter {
+        $0 != TalkInspector.bundleID && $0 != "us.zoom"
     }
 
     /// A call in a browser tab (Толк web, Meet) is indistinguishable from any other tab from
@@ -179,7 +244,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopRecordingKeepingMeeting()
         } else {
             prompt.dismiss()
-            controller.start(app: activeApp ?? "manual")
+            pendingBrowserApp = nil
+            pendingTicks = 0
+            let app = activeApp ?? "manual"
+            guard AppDelegate.browserApps.contains(app) else {
+                controller.start(app: app)
+                return
+            }
+            // Started by hand while a browser holds the mic — the tab still knows the title.
+            pollQueue.async { [weak self] in
+                let info = BrowserTabs.meetingInfo(forBrowser: app)
+                DispatchQueue.main.async { self?.controller.start(app: app, info: info) }
+            }
         }
     }
 

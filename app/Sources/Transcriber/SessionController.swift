@@ -60,9 +60,11 @@ final class SessionController {
         return nil
     }
 
-    func start(app: String) {
+    /// `info` is for callers that already know the meeting (a browser tab, say); without it the
+    /// only source is the Толк desktop window.
+    func start(app: String, info providedInfo: MeetingInfo? = nil) {
         guard case .idle = state else { return }
-        let info = app == TalkInspector.bundleID ? TalkInspector.inspect() : MeetingInfo()
+        let info = providedInfo ?? (app == TalkInspector.bundleID ? TalkInspector.inspect() : MeetingInfo())
         var created: SessionDir?
         do {
             let dir = try store.create(app: app, title: info.title, participants: info.participants)

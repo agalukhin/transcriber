@@ -48,6 +48,22 @@ if let i = CommandLine.arguments.firstIndex(of: "--record-test") {
     exit(0)
 }
 
+/// `Transcriber --tabs-test [bundleID]` lists the browser's tabs and shows which one it takes for
+/// a meeting; the first run may raise the Automation permission dialog.
+if let i = CommandLine.arguments.firstIndex(of: "--tabs-test") {
+    let bundleID = CommandLine.arguments.dropFirst(i + 1).first ?? "com.google.Chrome"
+    let tabs = BrowserTabs.tabs(ofBrowser: String(bundleID))
+    print("\(bundleID): \(tabs.count) вкладок")
+    if let meeting = BrowserTabs.pickMeeting(tabs) {
+        print("встреча: \(meeting.title)")
+        print("url: \(meeting.url)")
+        print("название: '\(BrowserTabs.cleanTitle(meeting.title))'")
+    } else {
+        print("встреча: не найдена")
+    }
+    exit(0)
+}
+
 /// `Transcriber --prompt-test [seconds]` shows the meeting prompt for a visual check, then exits.
 if let i = CommandLine.arguments.firstIndex(of: "--prompt-test") {
     let seconds = Double(CommandLine.arguments.dropFirst(i + 1).first ?? "6") ?? 6
@@ -58,7 +74,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--prompt-test") {
         if CommandLine.arguments.contains("stop") {
             prompt.show(PromptPanel.stop(minutes: 3), onPrimary: { print("stop") }, onSecondary: { print("continue") })
         } else {
-            prompt.show(appName: "браузере", onRecord: { print("record") }, onSkip: { print("skip") })
+            // `--prompt-test title «…»` checks the browser card, which leads with the meeting name.
+            let j = CommandLine.arguments.firstIndex(of: "title")
+            let title: String? = j.flatMap { CommandLine.arguments.dropFirst($0 + 1).first }
+            prompt.show(PromptPanel.meeting(appName: "браузере", title: title),
+                        onPrimary: { print("record") }, onSecondary: { print("skip") })
         }
     }
     if let j = CommandLine.arguments.firstIndex(of: "--prompt-png"), let path = CommandLine.arguments.dropFirst(j + 1).first {

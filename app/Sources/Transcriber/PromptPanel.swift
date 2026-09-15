@@ -21,9 +21,16 @@ final class PromptPanel {
         var timeout: TimeInterval
     }
 
-    static func meeting(appName: String) -> Spec {
-        Spec(symbol: "record.circle", tint: .systemRed, title: "Встреча в \(appName)",
-             subtitle: "Записать разговор и завести заметку в вольте?", primary: "Записать", secondary: "Не сейчас", timeout: 90)
+    /// With a known meeting name the card leads with it — «Встреча в браузере» says nothing when
+    /// the browser has already told us which call it is.
+    static func meeting(appName: String, title: String? = nil) -> Spec {
+        if let title, !title.isEmpty {
+            return Spec(symbol: "record.circle", tint: .systemRed, title: title,
+                        subtitle: "В браузере идёт звонок. Записать и завести заметку?",
+                        primary: "Записать", secondary: "Не сейчас", timeout: 90)
+        }
+        return Spec(symbol: "record.circle", tint: .systemRed, title: "Встреча в \(appName)",
+                    subtitle: "Записать разговор и завести заметку в вольте?", primary: "Записать", secondary: "Не сейчас", timeout: 90)
     }
 
     static func stop(minutes: Int) -> Spec {

@@ -12,5 +12,6 @@
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Транскрибатор пишет вашу речь на встречах.</string>
+<key>NSAppleEventsUsageDescription</key><string>Транскрибатор спрашивает у браузера название встречи в открытой вкладке.</string>
 <key>NSAudioCaptureUsageDescription</key><string>Транскрибатор пишет речь собеседников из Толка и Zoom.</string>
 </dict></plist>
