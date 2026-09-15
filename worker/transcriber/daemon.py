@@ -9,6 +9,7 @@ from .config import Config
 from .models import Models, load_models
 from .pipeline import Pipeline
 from .session import Session
+from .vault import ensure_stub, write_raw
 
 log = logging.getLogger("transcriber")
 
@@ -51,6 +52,12 @@ class Daemon:
                     session = Session.load(d)
                     if session.state.status in DEAD:
                         continue
+                    if session.state.raw_path is None:
+                        # заметка и Raw должны существовать до первой загрузки моделей (10+ с),
+                        # иначе «открыть заметку» в приложении бьётся в пустой note_path
+                        ensure_stub(self.cfg, session)
+                        write_raw(self.cfg, session, "идёт запись")
+                        session.save_state()
                     m = self.models
                     pipe = Pipeline(self.cfg, session, m.asr, m.embed, m.prob_factory)
                     self.pipes[d] = pipe

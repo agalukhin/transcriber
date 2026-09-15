@@ -1,3 +1,14 @@
+"""CLI воркера.
+
+* ``transcriber run`` — демон, следит за каталогом сессий;
+* ``transcriber from-wav MIC SYS`` — прогон пары WAV как одной сессии;
+* ``transcriber finalize SESSION_ID`` — финализация сессии (нужны аудио и модели);
+* ``transcriber refinalize SESSION_ID`` — постобработка уже сохранённого ``state.json``
+  без аудио и без ASR: тексты через фильтры галлюцинаций, эхо-фильтр по всем mic-репликам,
+  перекластеризация эмбеддингов текущими порогами, перезапись Raw. Нужна, когда пороги
+  или фильтры поменялись, а переслушать встречу уже нечем — аудио удалено.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -13,9 +24,14 @@ import numpy as np
 
 from .config import Config, load_config
 from .daemon import Daemon
+from .echo import is_echo
 from .models import Models, load_models
-from .pipeline import Pipeline
+from .pipeline import Pipeline, recluster_records
+from .quality import junk_reason, prompt_vocabulary
 from .session import Session
+from .vault import write_raw
+
+log = logging.getLogger("transcriber")
 
 
 def decode_pcm(raw: bytes, width: int) -> np.ndarray:
@@ -74,6 +90,31 @@ def from_wav(cfg: Config, mic: Path, sys_: Path, title: str, app: str, models: M
     return Path(pipe.s.state.raw_path)
 
 
+def refinalize(cfg: Config, session_id: str) -> Path:
+    """Пересобрать результат сессии из сохранённого state.json — без аудио, без ASR."""
+    session = Session.load(cfg.sessions_dir / session_id)
+    st = session.state
+    vocabulary = prompt_vocabulary(session.meta.participants, cfg.glossary)
+    for r in st.records:
+        reason = junk_reason(r.text, vocabulary, cfg.language) if r.text else None
+        if reason:
+            log.info("dropped (%s) %.1f-%.1f: %s", reason, r.start, r.end, r.text)
+            r.text = ""
+    sys_recs = [r for r in st.records if r.channel == "sys"]
+    kept: list = []
+    for r in st.records:
+        if r.channel == "mic" and is_echo(r, sys_recs, cfg.echo_overlap, cfg.echo_similarity,
+                                          cfg.echo_strong_similarity):
+            log.info("echo dropped %.1f-%.1f: %s", r.start, r.end, r.text)
+            continue
+        kept.append(r)
+    st.records = kept
+    recluster_records(cfg, st)
+    p = write_raw(cfg, session, f"финализирован повторно {datetime.now().strftime('%H:%M')}")
+    session.save_state()
+    return p
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ap = argparse.ArgumentParser(prog="transcriber")
@@ -86,6 +127,8 @@ def main(argv: list[str] | None = None) -> None:
     fw.add_argument("--app", default="manual")
     fz = sub.add_parser("finalize", help="finalize a session by id")
     fz.add_argument("session_id")
+    rf = sub.add_parser("refinalize", help="redo post-processing over a saved session (no audio, no ASR)")
+    rf.add_argument("session_id")
     args = ap.parse_args(argv)
     cfg = load_config()
     if args.cmd == "run":
@@ -103,6 +146,8 @@ def main(argv: list[str] | None = None) -> None:
         pipe = Pipeline(cfg, Session.load(d), m.asr, m.embed, m.prob_factory)
         pipe.finalize()
         print(pipe.s.state.raw_path)
+    elif args.cmd == "refinalize":
+        print(refinalize(cfg, args.session_id))
 
 
 if __name__ == "__main__":

@@ -178,3 +178,106 @@ def test_daemon_forgets_vanished_and_externally_finalized_sessions(vault, tmp_pa
     shutil.rmtree(d2)
     assert dm.once() is False
     assert d2 not in dm.pipes
+
+
+def test_daemon_creates_vault_files_before_loading_models(vault, tmp_path, monkeypatch, caplog):
+    """Клик «открыть заметку» в приложении не должен ждать 10 секунд загрузки моделей."""
+    sessions = tmp_path / "sessions"
+    d = make_session(sessions)
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    cfg = Config(vault_root=vault, sessions_dir=sessions)
+
+    def boom(_cfg):
+        raise RuntimeError("модели не загрузились")
+
+    monkeypatch.setattr(daemon, "load_models", boom)
+    dm = daemon.Daemon(cfg)
+    with caplog.at_level("ERROR", logger="transcriber"):
+        assert dm.once() is False            # без моделей работы не сделано
+    state = json.loads((d / "state.json").read_text())
+    assert Path(state["raw_path"]).exists() and Path(state["note_path"]).exists()
+    assert "Статус: идёт запись" in Path(state["raw_path"]).read_text()
+    assert dm.failures[d] == 1               # падение ушло в обычный путь обработки, без краша
+
+
+def test_daemon_does_not_rewrite_vault_files_for_a_resumed_session(vault, tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    d = make_session(sessions)
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(3.0)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(2.0)])))
+    cfg = Config(vault_root=vault, sessions_dir=sessions)
+    daemon.Daemon(cfg, models=fake_models()).once()
+    raw = Path(json.loads((d / "state.json").read_text())["raw_path"])
+    raw.write_text("правка снаружи")
+    monkeypatch.setattr(daemon, "load_models", lambda _cfg: (_ for _ in ()).throw(RuntimeError("no models")))
+    dm = daemon.Daemon(cfg)
+    dm.once()
+    assert raw.read_text() == "правка снаружи"   # raw_path уже есть — заглушку не перезаписываем
+
+
+SYNTHETIC_RECORDS = [
+    {"channel": "sys", "start": 0.0, "end": 2.0, "text": "Давайте обсудим контракт", "speaker": "Speaker 1", "emb": 0},
+    {"channel": "sys", "start": 4.0, "end": 6.0, "text": "Термины, Саша Галухин.", "speaker": "Speaker 2", "emb": 1},
+    {"channel": "sys", "start": 8.0, "end": 10.0, "text": "Мы отдадим SQL", "speaker": "Speaker 3", "emb": 2},
+    {"channel": "sys", "start": 12.0, "end": 14.0, "text": "Аааа... Ааа...", "speaker": "Speaker 4", "emb": 3},
+    {"channel": "sys", "start": 16.0, "end": 18.0, "text": "Ну да, конечно", "speaker": "Speaker 5", "emb": 4},
+    {"channel": "mic", "start": 7.0, "end": 11.0, "text": "Мы отдадим SQL.", "speaker": "Me", "emb": None},
+    {"channel": "mic", "start": 20.0, "end": 22.0, "text": "Я думаю, надо начать с октября", "speaker": "Me", "emb": None},
+    {"channel": "mic", "start": 30.0, "end": 32.0, "text": "Владислав, Магнит, Омни, CDP, Катя Галухин.", "speaker": "Me", "emb": None},
+]
+SYNTHETIC_EMB = [[1, 0, 0], [0, 1, 0], [1, 0, 0], [0, 1, 0], [0.25, 0, 0.97]]
+
+
+def _synthetic_session(sessions: Path) -> Path:
+    d = make_session(sessions, title="Встреча")
+    (d / "state.json").write_text(json.dumps({
+        "status": "finalized", "mic_offset": 0, "sys_offset": 0, "raw_path": None, "note_path": None,
+        "records": SYNTHETIC_RECORDS, "pending_mic": [],
+        "embeddings": SYNTHETIC_EMB, "speaker_of_emb": [0, 1, 2, 3, 4], "errors": [],
+    }, ensure_ascii=False))
+    return d
+
+
+def test_refinalize_cleans_texts_echo_and_speakers_without_audio(vault, tmp_path, caplog):
+    sessions = tmp_path / "sessions"
+    d = _synthetic_session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions,
+                 glossary=["Магнит", "Омни", "CDP", "Саша Галухин", "Катя Гладникова"])
+    with caplog.at_level("INFO", logger="transcriber"):
+        raw = cli.refinalize(cfg, "2026-09-15-1430")
+
+    state = json.loads((d / "state.json").read_text())
+    assert state["speaker_of_emb"] == [0, 1, 0, 1, 0]         # пять «спикеров» схлопнулись в двух
+    kinds = [(r["channel"], r["text"]) for r in state["records"]]
+    assert ("mic", "Мы отдадим SQL.") not in kinds            # эхо убрано
+    assert ("mic", "Я думаю, надо начать с октября") in kinds
+    assert [r["text"] for r in state["records"] if r["channel"] == "sys"] == [
+        "Давайте обсудим контракт", "", "Мы отдадим SQL", "", "Ну да, конечно"]
+    assert [r["speaker"] for r in state["records"] if r["channel"] == "sys"] == [
+        "Speaker 1", "Speaker 2", "Speaker 1", "Speaker 2", "Speaker 1"]
+
+    body = raw.read_text().split("## Полный транскрипт", 1)[1]
+    assert "Статус: финализирован повторно" in raw.read_text()
+    assert "Галухин" not in body and "Аааа" not in body
+    assert body.count("Мы отдадим SQL") == 1
+    assert "prompt leak" in caplog.text and "filler" in caplog.text
+
+
+def test_refinalize_is_idempotent(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    d = _synthetic_session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, glossary=["Магнит", "Омни", "CDP", "Саша Галухин"])
+    first = cli.refinalize(cfg, "2026-09-15-1430").read_text()
+    again = cli.refinalize(cfg, "2026-09-15-1430")
+    assert again.read_text().replace("повторно", "") == first.replace("повторно", "")
+    assert json.loads((d / "state.json").read_text())["speaker_of_emb"] == [0, 1, 0, 1, 0]
+
+
+def test_refinalize_command_prints_raw_path(vault, tmp_path, capsys, monkeypatch):
+    sessions = tmp_path / "sessions"
+    _synthetic_session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, glossary=["Магнит"])
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    cli.main(["refinalize", "2026-09-15-1430"])
+    assert capsys.readouterr().out.strip().endswith("Local-2026-09-15-1430-Встреча.md")
