@@ -22,7 +22,8 @@ class Utterance:
 class Segmenter:
     def __init__(self, speech_prob: Callable[[np.ndarray], float], sample_rate: int = 16000,
                  threshold: float = 0.5, min_silence_ms: int = 700, speech_pad_ms: int = 100,
-                 max_utterance_s: float = 30.0, start_sample: int = 0):
+                 max_utterance_s: float = 30.0, start_sample: int = 0,
+                 preroll: np.ndarray | None = None):
         self.prob = speech_prob
         self.sr = sample_rate
         self.threshold = threshold
@@ -35,13 +36,41 @@ class Segmenter:
         self.silence_run = 0                  # samples of silence inside the open utterance
         self.buf: list[np.ndarray] = []       # chunks since buf_start
         self.buf_start = self.pos
-        self.tail = np.zeros(0, dtype=np.float32)  # last chunk before speech, for the pad
+        self.tail = np.zeros(0, dtype=np.float32)  # audio before speech, kept for the pad
+        if preroll is not None and self.pad:
+            # resume: pos stays at start_sample, but the pad before it is already known
+            self.tail = np.asarray(preroll, dtype=np.float32)[-self.pad:]
+
+    def _keep_tail(self, audio: np.ndarray) -> np.ndarray:
+        # speech_pad_ms == 0 → no pad at all; audio[-0:] would keep everything
+        return np.asarray(audio, dtype=np.float32)[-self.pad:] if self.pad else np.zeros(0, dtype=np.float32)
 
     def boundary(self) -> int:
+        """Safe resume point: start of the open utterance, else the read head.
+
+        Resegmenting from here reproduces the same utterances, but not bit-exactly: the
+        chunk grid restarts at this offset, so boundaries can shift by up to one chunk.
+        Pass the `pad` samples before it as `preroll`, otherwise the first utterance after
+        a restart also loses its leading pad.
+        """
         return self.open_start if self.open_start is not None else self.pos
 
+    def flush(self) -> list[Utterance]:
+        """Close whatever is still open — the recording stopped mid-speech."""
+        if self.open_start is None:
+            return []
+        out: list[Utterance] = []
+        if len(self.remainder):
+            rest = np.concatenate([self.remainder, np.zeros(-len(self.remainder) % CHUNK, dtype=np.float32)])
+            self.remainder = np.zeros(0, dtype=np.float32)
+            for i in range(len(rest) // CHUNK):
+                out.extend(self._consume(rest[i * CHUNK:(i + 1) * CHUNK]))
+        if self.open_start is not None:
+            out.append(self._close(self.pos))
+        return out
+
     def feed(self, audio: np.ndarray) -> list[Utterance]:
-        data = np.concatenate([self.remainder, audio.astype(np.float32)])
+        data = np.concatenate([self.remainder, np.asarray(audio, dtype=np.float32)])
         n_full = len(data) // CHUNK
         self.remainder = data[n_full * CHUNK:]
         out: list[Utterance] = []
@@ -61,7 +90,7 @@ class Segmenter:
                 self.buf = [self.tail, chunk] if len(self.tail) else [chunk]
                 self.silence_run = 0
             else:
-                self.tail = np.concatenate([self.tail, chunk])[-self.pad:]
+                self.tail = self._keep_tail(np.concatenate([self.tail, chunk]))
             self.pos += CHUNK
             return out
         self.buf.append(chunk)
@@ -73,7 +102,7 @@ class Segmenter:
         if self.silence_run >= self.min_silence:
             end = min(self.pos - self.silence_run + self.pad, self.pos)
             out.append(self._close(end))
-            self.tail = chunk[-self.pad:]
+            self.tail = self._keep_tail(chunk)
         elif self.pos - self.open_start >= self.max_len:
             out.append(self._close(self.pos))
             self.tail = np.zeros(0, dtype=np.float32)

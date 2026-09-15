@@ -9,7 +9,7 @@ import numpy as np
 from .asr import build_prompt
 from .config import Config
 from .echo import is_echo
-from .pcm import PcmReader
+from .pcm import PcmReader, read_range
 from .session import Rec, Session
 from .speakers import OnlineClusterer, label, recluster
 from .vad import Segmenter, Utterance
@@ -30,11 +30,14 @@ class Pipeline:
         self.embed = embed
         st = session.state
         self.readers = {"mic": PcmReader(session.mic_pcm, st.mic_offset), "sys": PcmReader(session.sys_pcm, st.sys_offset)}
-        self.segs = {
-            ch: Segmenter(prob_factory(), cfg.sample_rate, cfg.vad_threshold, cfg.min_silence_ms, cfg.speech_pad_ms,
-                          cfg.max_utterance_s, start_sample=off)
-            for ch, off in (("mic", st.mic_offset), ("sys", st.sys_offset))
-        }
+        pad = int(cfg.sample_rate * cfg.speech_pad_ms / 1000)
+        self.segs: dict[str, Segmenter] = {}
+        for ch, off, pcm in (("mic", st.mic_offset, session.mic_pcm), ("sys", st.sys_offset, session.sys_pcm)):
+            # on resume the pad before the offset is already on disk — otherwise the first
+            # utterance after a restart starts up to speech_pad_ms late
+            preroll = read_range(pcm, off - pad, off) if off > 0 and pad > 0 else None
+            self.segs[ch] = Segmenter(prob_factory(), cfg.sample_rate, cfg.vad_threshold, cfg.min_silence_ms,
+                                      cfg.speech_pad_ms, cfg.max_utterance_s, start_sample=off, preroll=preroll)
         self.clusterer = OnlineClusterer.from_history(cfg.speaker_similarity, st.embeddings, st.speaker_of_emb)
         self.prompt = build_prompt(session.meta.participants, cfg.glossary)
         self.last_sys_speaker = next((r.speaker for r in reversed(st.records) if r.channel == "sys"), label(0))
@@ -118,6 +121,11 @@ class Pipeline:
     def finalize(self) -> None:
         while self.step():
             pass
+        for ch in ("mic", "sys"):
+            for u in self.segs[ch].flush():       # recording may have stopped mid-speech
+                self._handle(ch, u)
+        self.s.state.mic_offset = self.segs["mic"].boundary()   # flushed audio must not be re-read
+        self.s.state.sys_offset = self.segs["sys"].boundary()
         self._flush_pending_mic(force=True)
         st = self.s.state
         if len(st.embeddings) >= 2:

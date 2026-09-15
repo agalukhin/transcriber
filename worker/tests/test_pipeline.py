@@ -97,3 +97,19 @@ def test_finalize_keeps_audio_when_configured(vault, tmp_path):
     cfg, s, p = build(vault, tmp_path / "sessions", keep_audio=True)
     p.finalize()
     assert (d / "mic.pcm").exists()
+
+
+def test_finalize_flushes_open_sys_utterance(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    write(d, "mic.pcm", silence(3.0))
+    write(d, "sys.pcm", np.concatenate([silence(0.5), tone(2.5, 880)]))   # запись обрывается на речи
+    cfg, s, p = build(vault, tmp_path / "sessions", keep_audio=True)
+    p.step()
+    assert s.state.records == []            # реплика ещё открыта
+    p.finalize()
+    recs = [r for r in s.state.records if r.channel == "sys"]
+    assert len(recs) == 1 and recs[0].text == "tone880"
+    assert "tone880" in Path(s.state.raw_path).read_text()
+    cfg2, s2, p2 = build(vault, tmp_path / "sessions", keep_audio=True)   # повтор не дублирует
+    p2.finalize()
+    assert len([r for r in s2.state.records if r.channel == "sys"]) == 1
