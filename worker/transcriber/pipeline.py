@@ -16,6 +16,7 @@ from .session import Rec, Session, State
 from .speakers import OnlineClusterer, absorb_small_clusters, label, recluster
 from .vad import Segmenter
 from .vault import ensure_stub, write_raw
+from .voices import VoiceLibrary, centroid_of
 
 log = logging.getLogger("transcriber")
 
@@ -23,26 +24,72 @@ PROMPT_LEAK = "prompt leak"     # имя правила из quality.junk_reason
 CARRY_MAX = 200                 # столько символов прошлого блока канала уносим в следующий промпт
 
 
-def recluster_records(cfg: Config, st: State) -> None:
+def name_clusters(cfg: Config, st: State, library: VoiceLibrary | None = None) -> dict[int, str]:
+    """Сверить центроиды кластеров с библиотекой голосов: {индекс кластера: имя}.
+
+    Кластер короче ``voice_min_samples`` не именуем — по одной-двум репликам отпечаток врёт.
+    Одно имя достаётся одному кластеру: при споре побеждает большее сходство, проигравший
+    остаётся «Speaker N». Ошибиться именем хуже, чем не опознать.
+    """
+    lib = library if library is not None else VoiceLibrary(cfg.voices_dir, cfg.voice_match_similarity)
+    st.speaker_names = {}
+    if not lib.names():
+        return {}
+    by_cluster: dict[int, list[list[float]]] = {}
+    for i, cluster in enumerate(st.speaker_of_emb[:len(st.embeddings)]):
+        by_cluster.setdefault(int(cluster), []).append(st.embeddings[i])
+    claims: list[tuple[float, int, str]] = []
+    for cluster, embs in by_cluster.items():
+        if len(embs) < cfg.voice_min_samples:
+            continue
+        centroid = centroid_of(embs)
+        hit = lib.match(centroid) if centroid else None
+        if hit is not None:
+            claims.append((hit[1], cluster, hit[0]))
+    taken: set[str] = set()
+    mapping: dict[int, str] = {}
+    for similarity, cluster, name in sorted(claims, key=lambda c: (-c[0], c[1])):
+        if name in taken:
+            log.info("voices: %s уже занят более похожим кластером — %s остаётся без имени",
+                     name, label(cluster))
+            continue
+        taken.add(name)
+        mapping[cluster] = name
+        log.info("voices: %s → %s (%.3f, %d реплик)", label(cluster), name, similarity,
+                 len(by_cluster[cluster]))
+    st.speaker_names = {str(c): mapping[c] for c in sorted(mapping)}
+    return mapping
+
+
+def recluster_records(cfg: Config, st: State, library: VoiceLibrary | None = None) -> None:
     """Глобальная перекластеризация по всем эмбеддингам сессии + перелейблинг sys-реплик.
 
     Общая для finalize() и `transcriber refinalize`, поэтому вынесена из класса.
+    После перекластеризации кластеры сверяются с библиотекой голосов: опознанные получают
+    имя человека вместо «Speaker N», индекс кластера остаётся в ``speaker_of_emb``.
     """
-    if len(st.embeddings) < 2:
+    if len(st.embeddings) >= 2:
+        new = recluster(np.asarray(st.embeddings, dtype=np.float32), cfg.speaker_similarity)
+        st.speaker_of_emb = absorb_small_clusters(new, st.embeddings)
+    names = name_clusters(cfg, st, library)
+    if not st.embeddings:
         return
-    new = recluster(np.asarray(st.embeddings, dtype=np.float32), cfg.speaker_similarity)
-    new = absorb_small_clusters(new, st.embeddings)
-    st.speaker_of_emb = new
+
+    def speaker_of(emb: int) -> str:
+        cluster = int(st.speaker_of_emb[emb])
+        return names.get(cluster) or label(cluster)
+
     sys_recs = [r for r in sorted(st.records, key=lambda r: r.start) if r.channel == "sys"]
     first_emb = next((r for r in sys_recs if r.emb is not None), None)
     # короткая реплика до первой опознанной наследует её метку, а не «Speaker 1» вслепую
-    last = label(new[first_emb.emb]) if first_emb is not None else label(0)
+    last = speaker_of(first_emb.emb) if first_emb is not None else label(0)
     for r in sys_recs:
         if r.emb is not None:
-            r.speaker = label(new[r.emb])
+            r.speaker = speaker_of(r.emb)
             last = r.speaker
         else:
             r.speaker = last
+
 
 Asr = Callable[[np.ndarray, str], list[Segment]]
 Embed = Callable[[np.ndarray], np.ndarray]

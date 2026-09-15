@@ -72,3 +72,15 @@ def test_block_defaults_and_shipped_yaml_agree(tmp_path):
     data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
     assert data["block_min_s"] == 45 and data["block_max_s"] == 90
     assert data["block_gap_s"] == 1.5 and data["carry_context"] is True
+
+
+def test_voice_settings_have_defaults_and_expand_paths(tmp_path):
+    cfg = load_config(yaml_path=tmp_path / "missing.yaml", glossary_path=tmp_path / "missing.txt")
+    assert cfg.voices_dir.name == "voices"
+    assert cfg.voice_match_similarity == 0.45
+    assert cfg.voice_min_samples == 3
+
+    (tmp_path / "c.yaml").write_text("voices_dir: ~/голоса\nvoice_match_similarity: 0.6\nvoice_min_samples: 5\n")
+    cfg = load_config(yaml_path=tmp_path / "c.yaml", glossary_path=tmp_path / "missing.txt")
+    assert cfg.voices_dir == Path("~/голоса").expanduser()
+    assert cfg.voice_match_similarity == 0.6 and cfg.voice_min_samples == 5

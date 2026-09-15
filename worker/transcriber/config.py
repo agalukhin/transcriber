@@ -13,6 +13,9 @@ log = logging.getLogger("transcriber")
 # ~/Claude/transcriber; TRANSCRIBER_ROOT lets tests and a second checkout point elsewhere
 ROOT = Path(os.environ.get("TRANSCRIBER_ROOT", Path(__file__).resolve().parents[2]))
 
+# каталог по умолчанию отдельной константой: тесты подменяют его, чтобы не читать рабочую библиотеку
+VOICES_DIR = ROOT / "voices"
+
 
 @dataclass
 class Config:
@@ -34,6 +37,9 @@ class Config:
     read_chunk_s: float = 30.0      # сколько аудио за один step(), чтобы бэклог не влезал в RAM целиком
     min_embed_s: float = 1.0
     speaker_similarity: float = 0.3
+    voices_dir: Path = field(default_factory=lambda: VOICES_DIR)   # библиотека голосовых профилей, по файлу на человека
+    voice_match_similarity: float = 0.45        # ниже — кластер остаётся «Speaker N»: ошибиться именем хуже
+    voice_min_samples: int = 3                  # кластер короче — имени не даём, отпечаток ненадёжен
     echo_overlap: float = 0.8
     echo_similarity: float = 0.6
     echo_strong_similarity: float = 0.8   # дословный повтор — эхо даже при коротком перекрытии
@@ -58,7 +64,7 @@ def load_config(yaml_path: Path | None = None, glossary_path: Path | None = None
     if unknown:
         log.warning("config.yaml: unknown keys ignored: %s", ", ".join(unknown))
     kwargs = {k: v for k, v in data.items() if k in known}
-    for key in ("vault_root", "sessions_dir"):
+    for key in ("vault_root", "sessions_dir", "voices_dir"):
         if key in kwargs:
             kwargs[key] = Path(kwargs[key]).expanduser()
     if glossary_path.exists():

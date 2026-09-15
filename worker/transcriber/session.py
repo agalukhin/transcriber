@@ -50,6 +50,7 @@ class State:
     pending_mic: list[Rec] = field(default_factory=list)
     embeddings: list[list[float]] = field(default_factory=list)
     speaker_of_emb: list[int] = field(default_factory=list)
+    speaker_names: dict[str, str] = field(default_factory=dict)   # индекс кластера (строкой) → имя из библиотеки голосов
     errors: list[str] = field(default_factory=list)
 
     @classmethod

@@ -9,3 +9,4 @@ __pycache__/
 worker.log
 
 build/
+voices/

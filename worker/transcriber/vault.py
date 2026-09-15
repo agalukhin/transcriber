@@ -62,7 +62,8 @@ def hhmm(seconds: float) -> str:
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}"
 
 
-def render_raw(meta: Meta, records: list[Rec], n_speakers: int, status_text: str, marker_every_s: int = 300) -> str:
+def render_raw(meta: Meta, records: list[Rec], n_speakers: int, status_text: str, marker_every_s: int = 300,
+               identified: list[str] | None = None) -> str:
     date, _ = stamp(meta)
     title = title_of(meta)
     who = ", ".join(meta.participants) if meta.participants else "не получены"
@@ -71,7 +72,9 @@ def render_raw(meta: Meta, records: list[Rec], n_speakers: int, status_text: str
         "---", "type: raw", "source: local", f"source_date: {date}", "projects: []", "tags: [raw]", "---", "",
         f"# {title} — {meta.started_at.strftime('%Y-%m-%d %H:%M')}", "",
         f"Локальная запись ({app}). Участники: {who}. "
-        f"Говорящих на канале собеседников: {n_speakers}. Статус: {status_text}. "
+        f"Говорящих на канале собеседников: {n_speakers}. "
+        + (f"Опознаны по голосу: {', '.join(identified)}. " if identified else "")
+        + f"Статус: {status_text}. "
         "«Me» — Владислав (микрофон), «Speaker N» — собеседники (системный звук), метки по голосу.", "",
         "## Полный транскрипт", "",
     ]
@@ -122,9 +125,10 @@ def write_raw(cfg: Config, session: Session, status_text: str) -> Path:
     st = session.state
     sys_speakers = {r.speaker for r in st.records if r.channel == "sys"}
     n_speakers = max(len(set(st.speaker_of_emb)), len(sys_speakers))
+    identified = [st.speaker_names[k] for k in sorted(st.speaker_names, key=lambda x: (len(x), x))]
     p = pinned_raw_path(cfg, session)
     p.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(p, render_raw(session.meta, st.records, n_speakers, status_text, cfg.marker_every_s))
+    atomic_write_text(p, render_raw(session.meta, st.records, n_speakers, status_text, cfg.marker_every_s, identified))
     st.raw_path = str(p)
     return p
 

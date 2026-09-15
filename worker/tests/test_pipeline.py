@@ -4,10 +4,10 @@ from pathlib import Path
 import numpy as np
 from transcriber.asr import Segment
 from transcriber.config import Config
-from transcriber.pipeline import Pipeline
-from transcriber.session import Session
-from tests.conftest import (FakeAsr, FakeEmbedder, SR, dominant_freq, fake_prob, make_session, silence,
-                            to_pcm_bytes, tone)
+from transcriber.pipeline import Pipeline, name_clusters, recluster_records
+from transcriber.session import Rec, Session, State
+from tests.conftest import (FakeAsr, FakeEmbedder, SR, dominant_freq, fake_prob, make_session, one_hot,
+                            seed_voice, silence, to_pcm_bytes, tone)
 
 
 # блок на реплику: тесты про эхо, говорящих и фильтры, а не про размер блока
@@ -370,3 +370,76 @@ def test_previous_block_text_is_carried_into_the_next_prompt(vault, tmp_path):
                      carry_context=False, **FAST)
     p2.step()
     assert asr2.prompts == [base, base]
+
+
+# ---- голосовые профили -------------------------------------------------------
+
+
+def _voiced(d: Path, freq: int = 880, n: int = 3):
+    """n реплик одного тона на канале собеседников — один кластер из n эмбеддингов."""
+    write(d, "mic.pcm", silence(2.0 * n + 3.0))
+    write(d, "sys.pcm", np.concatenate([x for _ in range(n) for x in (tone(1.0, freq), silence(1.0))] + [silence(2.0)]))
+
+
+def test_finalize_names_a_cluster_from_the_voice_library(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    _voiced(d)
+    seed_voice(tmp_path, "Ярослав Серов", [one_hot(880)])
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {"0": "Ярослав Серов"}
+    assert {r.speaker for r in s.state.records if r.channel == "sys"} == {"Ярослав Серов"}
+    assert s.state.speaker_of_emb == [0, 0, 0]          # индекс кластера остался доступен
+    raw = Path(s.state.raw_path).read_text()
+    assert "Опознаны по голосу: Ярослав Серов" in raw
+    assert "Ярослав Серов: tone880" in raw and "Speaker 1:" not in raw
+
+
+def test_cluster_shorter_than_voice_min_samples_stays_speaker_n(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    _voiced(d, n=2)                                     # два эмбеддинга — меньше порога в три
+    seed_voice(tmp_path, "Ярослав Серов", [one_hot(880)])
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {}
+    assert {r.speaker for r in s.state.records if r.channel == "sys"} == {"Speaker 1"}
+    assert "Опознаны по голосу" not in Path(s.state.raw_path).read_text()
+
+
+def test_unknown_voice_stays_speaker_n(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    _voiced(d, freq=1200)                               # в библиотеке такого голоса нет
+    seed_voice(tmp_path, "Ярослав Серов", [one_hot(880)])
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {}
+    assert {r.speaker for r in s.state.records if r.channel == "sys"} == {"Speaker 1"}
+
+
+def _state_with(embeddings, labels) -> State:
+    st = State(embeddings=[[float(x) for x in e] for e in embeddings], speaker_of_emb=list(labels))
+    st.records = [Rec(channel="sys", start=float(i), end=float(i) + 1, text=f"реплика {i}",
+                      speaker="Speaker 1", emb=i) for i in range(len(embeddings))]
+    return st
+
+
+def test_two_clusters_never_share_one_name(vault, tmp_path):
+    """Один профиль — один кластер: побеждает тот, что похож сильнее, второй остаётся Speaker N."""
+    seed_voice(tmp_path, "Ярослав Серов", [[1.0, 0.0, 0.0]])
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", voice_min_samples=3)
+    st = _state_with([[1, 0, 0]] * 3 + [[0.8, 0.6, 0.0]] * 3, [0, 0, 0, 1, 1, 1])
+    assert name_clusters(cfg, st) == {0: "Ярослав Серов"}
+
+    st = _state_with([[0.8, 0.6, 0.0]] * 3 + [[1, 0, 0]] * 3, [0, 0, 0, 1, 1, 1])
+    assert name_clusters(cfg, st) == {1: "Ярослав Серов"}      # порядок кластеров ничего не решает
+
+
+def test_names_survive_a_second_finalization_and_disappear_with_the_profile(vault, tmp_path):
+    seed_voice(tmp_path, "Дарья", [[0.0, 1.0, 0.0]])
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", voice_min_samples=3)
+    st = _state_with([[0, 1, 0]] * 3, [0, 0, 0])
+    recluster_records(cfg, st)
+    assert [r.speaker for r in st.records] == ["Дарья"] * 3 and st.speaker_names == {"0": "Дарья"}
+    (tmp_path / "voices" / "Дарья.json").unlink()
+    recluster_records(cfg, st)                                  # профиль удалили — имя уходит
+    assert [r.speaker for r in st.records] == ["Speaker 1"] * 3 and st.speaker_names == {}

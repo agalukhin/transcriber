@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from transcriber.asr import Segment
+from transcriber import config as config_module
+from transcriber.voices import VoiceLibrary
 
 SR = 16000
 FRAME = 160          # 10 мс — сетка, по которой FakeAsr ищет границы речи в блоке
@@ -109,3 +111,20 @@ def vault(tmp_path: Path) -> Path:
     (root / "Memory/50 · Raw/Local").mkdir(parents=True)
     (root / "Memory/30 · Meetings").mkdir(parents=True)
     return root
+
+
+@pytest.fixture(autouse=True)
+def isolated_voices(tmp_path, monkeypatch):
+    """Библиотека голосов в тестах — всегда пустой временный каталог, а не рабочая ~/Claude/transcriber/voices."""
+    monkeypatch.setattr(config_module, "VOICES_DIR", tmp_path / "voices")
+
+
+def one_hot(freq: int) -> list[float]:
+    """Тот же вектор, что вернёт FakeEmbedder на тоне этой частоты — им и засеиваем библиотеку."""
+    v = [0.0] * 8
+    v[(freq // 100) % 8] = 1.0
+    return v
+
+
+def seed_voice(tmp_path: Path, name: str, vectors: list[list[float]], source: str = "старая:Speaker 1") -> None:
+    VoiceLibrary(tmp_path / "voices").add(name, vectors, source=source)
