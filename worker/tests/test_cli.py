@@ -281,3 +281,65 @@ def test_refinalize_command_prints_raw_path(vault, tmp_path, capsys, monkeypatch
     monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
     cli.main(["refinalize", "2026-09-15-1430"])
     assert capsys.readouterr().out.strip().endswith("Local-2026-09-15-1430-Встреча.md")
+
+
+def _session_with_audio(sessions: Path, vault: Path) -> tuple[Path, Path, Path]:
+    """Сессия с сохранённым аудио и устаревшим state.json от прошлого прогона."""
+    d = make_session(sessions)
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 440), silence(5.0)])))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([silence(2.0), tone(1.5, 880), silence(2.0)])))
+    raw = vault / "Memory/50 · Raw/Local/Local-2026-09-15-1430-Старое-имя.md"
+    note = vault / "Memory/30 · Meetings/MTG-2026-09-15 1430 · Старое имя.md"
+    raw.write_text("прошлый прогон")
+    note.write_text("заглушка")
+    (d / "state.json").write_text(json.dumps({
+        "status": "finalized", "mic_offset": 10 ** 7, "sys_offset": 10 ** 7,
+        "raw_path": str(raw), "note_path": str(note),
+        "records": [{"channel": "sys", "start": 0.0, "end": 1.0, "text": "старый мусор",
+                     "speaker": "Speaker 1", "emb": 0}],
+        "pending_mic": [{"channel": "mic", "start": 0.0, "end": 1.0, "text": "хвост",
+                         "speaker": "Me", "emb": None}],
+        "embeddings": [[1.0, 0.0, 0.0]], "speaker_of_emb": [0], "errors": ["старая ошибка"],
+    }, ensure_ascii=False))
+    return d, raw, note
+
+
+def test_retranscribe_reruns_pipeline_over_saved_audio(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    d, raw, note = _session_with_audio(sessions, vault)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, keep_audio=True)
+    out = cli.retranscribe(cfg, "2026-09-15-1430", models=fake_models())
+    state = json.loads((d / "state.json").read_text())
+    assert out == raw and state["raw_path"] == str(raw) and state["note_path"] == str(note)
+    assert state["status"] == "finalized" and state["errors"] == []
+    assert {r["text"] for r in state["records"]} == {"tone440", "tone880"}
+    assert state["pending_mic"] == [] and state["mic_offset"] < 10 ** 7
+    text = raw.read_text()
+    assert "Me: tone440" in text and "Speaker 1: tone880" in text and "старый мусор" not in text
+    assert (d / "mic.pcm").exists()                      # keep_audio: аудио остаётся под следующий прогон
+
+
+def test_retranscribe_drops_audio_when_keep_audio_is_off(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    d, _raw, _note = _session_with_audio(sessions, vault)
+    cli.retranscribe(Config(vault_root=vault, sessions_dir=sessions), "2026-09-15-1430", models=fake_models())
+    assert not (d / "mic.pcm").exists() and not (d / "sys.pcm").exists()
+
+
+def test_retranscribe_command_prints_path_and_refuses_without_audio(vault, tmp_path, capsys, monkeypatch):
+    import pytest
+
+    sessions = tmp_path / "sessions"
+    d, raw, _note = _session_with_audio(sessions, vault)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, keep_audio=True)
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(cli, "load_models", lambda _cfg: fake_models())
+    cli.main(["retranscribe", "2026-09-15-1430"])
+    assert capsys.readouterr().out.strip() == str(raw)
+
+    (d / "mic.pcm").unlink()
+    (d / "sys.pcm").unlink()
+    with pytest.raises(SystemExit) as e:
+        cli.main(["retranscribe", "2026-09-15-1430"])
+    assert e.value.code == 2
+    assert "аудио" in capsys.readouterr().err

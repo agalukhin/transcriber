@@ -6,7 +6,11 @@
 * ``transcriber refinalize SESSION_ID`` — постобработка уже сохранённого ``state.json``
   без аудио и без ASR: тексты через фильтры галлюцинаций, эхо-фильтр по всем mic-репликам,
   перекластеризация эмбеддингов текущими порогами, перезапись Raw. Нужна, когда пороги
-  или фильтры поменялись, а переслушать встречу уже нечем — аудио удалено.
+  или фильтры поменялись, а переслушать встречу уже нечем — аудио удалено;
+* ``transcriber retranscribe SESSION_ID`` — полный повторный прогон сессии по сохранённому
+  ``mic.pcm``/``sys.pcm``: state сбрасывается (Raw и MTG остаются на своих путях) и вся
+  дорожка проходит ASR заново с текущим конфигом. Нужна при ``keep_audio: true``, когда
+  поменялись промпт, модель или пороги сегментации.
 """
 
 from __future__ import annotations
@@ -115,6 +119,26 @@ def refinalize(cfg: Config, session_id: str) -> Path:
     return p
 
 
+def retranscribe(cfg: Config, session_id: str, models: Models | None = None) -> Path:
+    """Прогнать сессию заново по сохранённому аудио — с текущим промптом, моделью и порогами."""
+    d = cfg.sessions_dir / session_id
+    session = Session.load(d)
+    if not (session.mic_pcm.exists() or session.sys_pcm.exists()):
+        raise ValueError(f"{session_id}: аудио сессии не сохранено — помогает только refinalize")
+    st = session.state
+    st.status = "recording"                    # raw_path и note_path сохраняем: файлы вольта те же
+    st.mic_offset = st.sys_offset = 0
+    st.records, st.pending_mic, st.embeddings, st.speaker_of_emb, st.errors = [], [], [], [], []
+    session.save_state()
+    (d / "STOP").touch()
+    m = models or load_models(cfg)
+    pipe = Pipeline(cfg, session, m.asr, m.embed, m.prob_factory)
+    while pipe.step() or pipe.has_backlog():
+        pass
+    pipe.finalize()
+    return Path(pipe.s.state.raw_path)
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ap = argparse.ArgumentParser(prog="transcriber")
@@ -129,6 +153,8 @@ def main(argv: list[str] | None = None) -> None:
     fz.add_argument("session_id")
     rf = sub.add_parser("refinalize", help="redo post-processing over a saved session (no audio, no ASR)")
     rf.add_argument("session_id")
+    rt = sub.add_parser("retranscribe", help="run the whole pipeline again over the session's saved audio")
+    rt.add_argument("session_id")
     args = ap.parse_args(argv)
     cfg = load_config()
     if args.cmd == "run":
@@ -148,6 +174,12 @@ def main(argv: list[str] | None = None) -> None:
         print(pipe.s.state.raw_path)
     elif args.cmd == "refinalize":
         print(refinalize(cfg, args.session_id))
+    elif args.cmd == "retranscribe":
+        try:
+            print(retranscribe(cfg, args.session_id))
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

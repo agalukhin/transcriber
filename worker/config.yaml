@@ -6,7 +6,8 @@ speaker_similarity: 0.3
 echo_overlap: 0.8
 echo_similarity: 0.6
 echo_strong_similarity: 0.8
-keep_audio: false
+# на период настройки; выключить, когда качество устроит
+keep_audio: true
 # Фразы, которые whisper галлюцинирует на тишине; вырезаются из текста.
 hallucinations:
   - Субтитры сделал DimaTorzok
