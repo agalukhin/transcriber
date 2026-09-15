@@ -5,7 +5,8 @@ import numpy as np
 from transcriber.config import Config
 from transcriber.pipeline import Pipeline
 from transcriber.session import Session
-from tests.conftest import FakeAsr, FakeEmbedder, SR, fake_prob, make_session, silence, to_pcm_bytes, tone
+from tests.conftest import (FakeAsr, FakeEmbedder, SR, dominant_freq, fake_prob, make_session, silence,
+                            to_pcm_bytes, tone)
 
 
 def write(d: Path, name: str, audio: np.ndarray):
@@ -211,3 +212,62 @@ def test_pending_mic_survives_restart(vault, tmp_path):
     p2.step()
     assert [(r.channel, r.text) for r in s2.state.records] == [("mic", "tone440")]
     assert s2.state.pending_mic == []
+
+
+def test_hallucinated_prompt_and_filler_are_dropped(vault, tmp_path, caplog):
+    """Whisper пересказывает промпт и мычит на неразборчивом — в транскрипт это не попадает."""
+    d = make_session(tmp_path / "sessions", participants=["Саша Галухин"])
+    write(d, "mic.pcm", silence(10.0))
+    write(d, "sys.pcm", np.concatenate([
+        tone(1.5, 880), silence(1.0), tone(1.5, 1200), silence(1.0), tone(1.5, 660), silence(1.5),
+    ]))
+    texts = {880: "Термины, Саша Галухин.", 1200: "Аааа... Ааа...", 660: "Давайте вернёмся к контракту"}
+    cfg, s, p = build(vault, tmp_path / "sessions",
+                      asr=lambda audio, prompt="": texts[dominant_freq(audio)])
+    with caplog.at_level("INFO", logger="transcriber"):
+        p.step()
+    recs = sorted([r for r in s.state.records if r.channel == "sys"], key=lambda r: r.start)
+    assert [r.text for r in recs] == ["", "", "Давайте вернёмся к контракту"]
+    assert "prompt leak" in caplog.text and "filler" in caplog.text
+    body = Path(s.state.raw_path).read_text().split("## Полный транскрипт", 1)[1]
+    assert "Галухин" not in body and "Аааа" not in body
+    assert body.strip().endswith("Давайте вернёмся к контракту")
+
+
+def test_asr_failure_is_still_marked_unrecognised_not_dropped(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    write(d, "mic.pcm", silence(5.0))
+    write(d, "sys.pcm", np.concatenate([tone(1.5, 880), silence(2.0)]))
+    cfg, s, p = build(vault, tmp_path / "sessions", asr=FakeAsr(fail_on={880}))
+    p.step()
+    assert [r.text for r in s.state.records] == [None]
+    assert "[не распознано" in Path(s.state.raw_path).read_text()
+
+
+class NearEmbedder:
+    """660 Гц — похожий, но не совпадающий голос: отдельный кластер, который надо подклеить."""
+
+    VECTORS = {880: (1.0, 0.0, 0.0), 1200: (0.0, 1.0, 0.0), 660: (0.25, 0.0, 0.97)}
+
+    def __call__(self, audio: np.ndarray) -> np.ndarray:
+        return np.array(self.VECTORS[dominant_freq(audio)], dtype=np.float32)
+
+
+def test_finalize_absorbs_single_utterance_speaker(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    write(d, "mic.pcm", silence(13.0))
+    write(d, "sys.pcm", np.concatenate([
+        tone(1.5, 880), silence(1.0), tone(1.5, 1200), silence(1.0),
+        tone(1.5, 880), silence(1.0), tone(1.5, 1200), silence(1.0),
+        tone(1.5, 660), silence(1.5),
+    ]))
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions")
+    s = Session.load(tmp_path / "sessions" / "2026-09-15-1430")
+    p = Pipeline(cfg, s, asr=FakeAsr(), embed=NearEmbedder(), prob_factory=lambda: fake_prob)
+    p.step()
+    (d / "STOP").touch()
+    p.finalize()
+    recs = sorted([r for r in s.state.records if r.channel == "sys"], key=lambda r: r.start)
+    assert [r.speaker for r in recs] == ["Speaker 1", "Speaker 2", "Speaker 1", "Speaker 2", "Speaker 1"]
+    assert len(set(s.state.speaker_of_emb)) == 2
+    assert "Говорящих на канале собеседников: 2" in Path(s.state.raw_path).read_text()

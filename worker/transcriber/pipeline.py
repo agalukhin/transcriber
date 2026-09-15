@@ -10,12 +10,35 @@ from .asr import build_prompt
 from .config import Config
 from .echo import is_echo
 from .pcm import PcmReader, read_range
-from .session import Rec, Session
-from .speakers import OnlineClusterer, label, recluster
+from .quality import junk_reason, prompt_vocabulary
+from .session import Rec, Session, State
+from .speakers import OnlineClusterer, absorb_small_clusters, label, recluster
 from .vad import Segmenter, Utterance
 from .vault import ensure_stub, write_raw
 
 log = logging.getLogger("transcriber")
+
+
+def recluster_records(cfg: Config, st: State) -> None:
+    """Глобальная перекластеризация по всем эмбеддингам сессии + перелейблинг sys-реплик.
+
+    Общая для finalize() и `transcriber refinalize`, поэтому вынесена из класса.
+    """
+    if len(st.embeddings) < 2:
+        return
+    new = recluster(np.asarray(st.embeddings, dtype=np.float32), cfg.speaker_similarity)
+    new = absorb_small_clusters(new, st.embeddings)
+    st.speaker_of_emb = new
+    sys_recs = [r for r in sorted(st.records, key=lambda r: r.start) if r.channel == "sys"]
+    first_emb = next((r for r in sys_recs if r.emb is not None), None)
+    # короткая реплика до первой опознанной наследует её метку, а не «Speaker 1» вслепую
+    last = label(new[first_emb.emb]) if first_emb is not None else label(0)
+    for r in sys_recs:
+        if r.emb is not None:
+            r.speaker = label(new[r.emb])
+            last = r.speaker
+        else:
+            r.speaker = last
 
 Asr = Callable[[np.ndarray, str], str]
 Embed = Callable[[np.ndarray], np.ndarray]
@@ -40,6 +63,7 @@ class Pipeline:
                                       cfg.speech_pad_ms, cfg.max_utterance_s, start_sample=off, preroll=preroll)
         self.clusterer = OnlineClusterer.from_history(cfg.speaker_similarity, st.embeddings, st.speaker_of_emb)
         self.prompt = build_prompt(session.meta.participants, cfg.glossary)
+        self.prompt_words = prompt_vocabulary(session.meta.participants, cfg.glossary)
         self.last_sys_speaker = next((r.speaker for r in reversed(st.records) if r.channel == "sys"), label(0))
         ensure_stub(cfg, session)
         if st.raw_path is None:
@@ -84,8 +108,16 @@ class Pipeline:
             self.s.state.errors.append(msg)
             return None
 
+    def _drop_junk(self, text: str | None, u: Utterance) -> str | None:
+        """Галлюцинация — это не «не распознано», а пустая реплика: в транскрипте её нет."""
+        reason = junk_reason(text, self.prompt_words, self.cfg.language) if text else None
+        if reason is None:
+            return text
+        log.info("dropped (%s) %.1f-%.1f: %s", reason, self._sec(u.start), self._sec(u.end), text)
+        return ""
+
     def _handle(self, ch: str, u: Utterance) -> None:
-        text = self._transcribe(u)
+        text = self._drop_junk(self._transcribe(u), u)
         rec = Rec(channel=ch, start=self._sec(u.start), end=self._sec(u.end), text=text, speaker="Me", emb=None)
         if ch == "mic":
             self.s.state.pending_mic.append(rec)
@@ -118,7 +150,8 @@ class Pipeline:
             if not ready:
                 keep.append(rec)
                 continue
-            if is_echo(rec, sys_recs, self.cfg.echo_overlap, self.cfg.echo_similarity):
+            if is_echo(rec, sys_recs, self.cfg.echo_overlap, self.cfg.echo_similarity,
+                       self.cfg.echo_strong_similarity):
                 log.info("echo dropped %.1f-%.1f: %s", rec.start, rec.end, rec.text)
             else:
                 st.records.append(rec)
@@ -138,19 +171,7 @@ class Pipeline:
         self.s.state.sys_offset = self.segs["sys"].boundary()
         self._flush_pending_mic(force=True)
         st = self.s.state
-        if len(st.embeddings) >= 2:
-            new = recluster(np.asarray(st.embeddings, dtype=np.float32), self.cfg.speaker_similarity)
-            st.speaker_of_emb = new
-            sys_recs = [r for r in sorted(st.records, key=lambda r: r.start) if r.channel == "sys"]
-            first_emb = next((r for r in sys_recs if r.emb is not None), None)
-            # короткая реплика до первой опознанной наследует её метку, а не «Speaker 1» вслепую
-            last = label(new[first_emb.emb]) if first_emb is not None else label(0)
-            for r in sys_recs:
-                if r.emb is not None:
-                    r.speaker = label(new[r.emb])
-                    last = r.speaker
-                else:
-                    r.speaker = last
+        recluster_records(self.cfg, st)
         st.status = "finalized"
         write_raw(self.cfg, self.s, f"финализирован {datetime.now().strftime('%H:%M')}")
         self.s.save_state()

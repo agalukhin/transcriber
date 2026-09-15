@@ -5,6 +5,8 @@ import re
 import numpy as np
 
 PROMPT_MAX = 600  # chars; whisper keeps ~224 tokens of prompt
+NO_SPEECH_MAX = 0.6     # сегмент с такой вероятностью тишины — не речь, а домысел модели
+LOGPROB_MIN = -1.2      # и сегмент, в который модель сама не верит
 
 
 def clean_text(text: str, hallucinations: list[str]) -> str:
@@ -22,6 +24,18 @@ def build_prompt(participants: list[str], glossary: list[str]) -> str:
         parts.append(f"Термины: {', '.join(glossary)}.")
     prompt = " ".join(parts)
     return prompt if len(prompt) <= PROMPT_MAX else prompt[:PROMPT_MAX - 1].rsplit(",", 1)[0] + "."
+
+
+def join_segments(result: dict) -> str:
+    """Текст без сегментов, которым сама модель не верит; если чистить нечего — исходный text."""
+    segments = result.get("segments") or []
+    text = result.get("text", "")
+    if not segments:
+        return text
+    kept = [s for s in segments
+            if float(s.get("no_speech_prob", 0.0) or 0.0) <= NO_SPEECH_MAX
+            and float(s.get("avg_logprob", 0.0) or 0.0) >= LOGPROB_MIN]
+    return text if len(kept) == len(segments) else "".join(s.get("text", "") for s in kept)
 
 
 class Transcriber:
@@ -42,4 +56,4 @@ class Transcriber:
             fp16=True,
             condition_on_previous_text=False,
         )
-        return clean_text(result.get("text", ""), self.hallucinations)
+        return clean_text(join_segments(result), self.hallucinations)
