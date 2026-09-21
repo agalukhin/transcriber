@@ -65,11 +65,48 @@ public enum BrowserTabs {
         return parse(result.stringValue ?? "")
     }
 
-    /// Title and participants for a call open in `bundleID`, or nil when no tab looks like a call.
-    /// Participants stay empty: the browser tells us nothing about who is in the room.
+    /// Title and participants for a call open in `bundleID`, or nil when no tab looks like a call,
+    /// or when the tab's title is still a placeholder (see `meetingTabState`).
     public static func meetingInfo(forBrowser bundleID: String) -> MeetingInfo? {
-        guard let tab = pickMeeting(tabs(ofBrowser: bundleID)) else { return nil }
-        return MeetingInfo(title: cleanTitle(tab.title), participants: [])
+        guard case .ready(let info) = meetingTabState(forBrowser: bundleID) else { return nil }
+        return info
+    }
+
+    /// `pickMeeting` finds a call, but a call tab in the pre-join lobby still carries the
+    /// service's placeholder title («Подключение к встрече») rather than the meeting name — the
+    /// title arrives a beat after the URL does. Callers re-check on `.placeholder` instead of
+    /// treating it as `.none` or naming the note after the placeholder.
+    public enum MeetingTabState: Equatable {
+        case none
+        case placeholder
+        case ready(MeetingInfo)
+    }
+
+    public static func meetingTabState(forBrowser bundleID: String) -> MeetingTabState {
+        meetingTabState(in: tabs(ofBrowser: bundleID))
+    }
+
+    /// Pure half of `meetingTabState(forBrowser:)`, split out so it can be tested on synthetic
+    /// tabs without going through AppleScript.
+    static func meetingTabState(in tabs: [BrowserTab]) -> MeetingTabState {
+        guard let tab = pickMeeting(tabs) else { return .none }
+        let title = cleanTitle(tab.title)
+        if isPlaceholder(title) { return .placeholder }
+        return .ready(MeetingInfo(title: title, participants: []))
+    }
+
+    /// Titles the call service shows before it knows the meeting name yet.
+    public static let placeholderTitles: [String] = ["Подключение к встрече", "Подключение", "Connecting",
+                                                      "Толк", "Загрузка", "Loading"]
+
+    /// `cleanedTitle` is the output of `cleanTitle`. Empty counts as a placeholder too — no title
+    /// beats a wrong one.
+    public static func isPlaceholder(_ cleanedTitle: String) -> Bool {
+        let t = cleanedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return true }
+        let lower = t.lowercased()
+        if placeholderTitles.contains(where: { $0.lowercased() == lower }) { return true }
+        return lower.hasPrefix("подключение к ")
     }
 
     // MARK: - AppleScript

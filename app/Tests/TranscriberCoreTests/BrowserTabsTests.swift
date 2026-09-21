@@ -55,3 +55,33 @@ private func tab(_ url: String, _ title: String = "") -> BrowserTab {
     #expect(BrowserTabs.tabs(ofBrowser: "com.example.nope") == [])
     #expect(BrowserTabs.meetingInfo(forBrowser: "com.example.nope") == nil)
 }
+
+@Test func isPlaceholderMatchesKnownLoadingTitles() {
+    #expect(BrowserTabs.isPlaceholder("Подключение к встрече"))
+    #expect(BrowserTabs.isPlaceholder("подключение к встрече"))   // case-insensitive
+    #expect(BrowserTabs.isPlaceholder("Подключение"))
+    #expect(BrowserTabs.isPlaceholder("Connecting"))
+    #expect(BrowserTabs.isPlaceholder("CONNECTING"))
+    #expect(BrowserTabs.isPlaceholder("Толк"))
+    #expect(BrowserTabs.isPlaceholder("Загрузка"))
+    #expect(BrowserTabs.isPlaceholder("Loading"))
+    #expect(BrowserTabs.isPlaceholder(""))
+    // Any «Подключение к …» reads as still-connecting, not just the exact phrase.
+    #expect(BrowserTabs.isPlaceholder("Подключение к комнате"))
+    // A real meeting title is not a placeholder, even one that mentions the service.
+    #expect(!BrowserTabs.isPlaceholder("ОКРs Q3: общий синхрон"))
+    #expect(!BrowserTabs.isPlaceholder("Толк про роадмап"))
+}
+
+@Test func meetingTabStateWaitsOutAPlaceholderTitle() {
+    // Pre-join screen: URL is already a room, title has not caught up yet.
+    let loading = [tab("https://talk.magnit.ru/room1", "Подключение к встрече")]
+    #expect(BrowserTabs.meetingTabState(in: loading) == .placeholder)
+
+    let ready = [tab("https://talk.magnit.ru/room1", "ОКРs Q3: общий синхрон — Толк")]
+    #expect(BrowserTabs.meetingTabState(in: ready) ==
+             .ready(MeetingInfo(title: "ОКРs Q3: общий синхрон", participants: [])))
+
+    let noCallTab = [tab("https://mail.google.com/x", "Почта")]
+    #expect(BrowserTabs.meetingTabState(in: noCallTab) == .none)
+}
