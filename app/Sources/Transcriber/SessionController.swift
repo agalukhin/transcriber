@@ -20,6 +20,14 @@ final class SessionController {
     var onStateChange: ((State) -> Void)?
     var onError: ((String) -> Void)?
 
+    /// True while the running session is private: the note lives outside the vault, so the UI has
+    /// to open it differently and say so.
+    private(set) var currentIsPrivate = false
+    /// One-shot override from the menu — forces the next session private whatever the schedule
+    /// says, then clears itself.
+    var forcePrivateNext = false
+    private var rules = PrivacyRules.load()
+
     private let store: SessionStore
     private let power = PowerHold()
     private var capture: TapCapture?
@@ -60,14 +68,26 @@ final class SessionController {
         return nil
     }
 
+    /// Would a session started now for `app` be private? Re-reads the rules, so the prompt the
+    /// user sees and the session that follows always agree.
+    func wouldBePrivate(app: String, now: Date = Date()) -> Bool {
+        rules = PrivacyRules.load()
+        return forcePrivateNext || rules.isPrivate(app: app, at: now)
+    }
+
     /// `info` is for callers that already know the meeting (a browser tab, say); without it the
     /// only source is the Толк desktop window.
-    func start(app: String, info providedInfo: MeetingInfo? = nil) {
+    func start(app: String, info providedInfo: MeetingInfo? = nil, now: Date = Date()) {
         guard case .idle = state else { return }
-        let info = providedInfo ?? (app == TalkInspector.bundleID ? TalkInspector.inspect() : MeetingInfo())
+        let isPrivate = wouldBePrivate(app: app, now: now)
+        // A private session carries no title: the name of a therapy call has no business in a
+        // file name, a log line or the menu — and the worker names the file by time alone.
+        let info = isPrivate ? MeetingInfo()
+                             : (providedInfo ?? (app == TalkInspector.bundleID ? TalkInspector.inspect() : MeetingInfo()))
         var created: SessionDir?
         do {
-            let dir = try store.create(app: app, title: info.title, participants: info.participants)
+            let dir = try store.create(app: app, title: info.title, participants: info.participants,
+                                       private: isPrivate)
             created = dir
             // Everything the capture queue reads is in place before the first chunk can arrive.
             micWriter = try PcmWriter(url: dir.micURL)
@@ -81,13 +101,16 @@ final class SessionController {
             capture = cap
             try cap.start { [weak self] chunk in self?.consume(chunk) }
             power.acquire()
+            currentIsPrivate = isPrivate
+            forcePrivateNext = false   // the override is spent only once the session really exists
             state = .recording(dir)
-            log.info("session \(dir.id) started (app \(app), title '\(info.title)')")
+            log.info("session \(dir.id) started (app \(app), title '\(info.title)'\(isPrivate ? ", приватная" : ""))")
             onStateChange?(state)
         } catch {
             log.error("session start failed: \(error)")
             cleanup()
             if let dir = created { discardIfEmpty(dir) }
+            currentIsPrivate = false
             state = .idle
             onStateChange?(state)
             onError?("Не удалось начать запись: \(error)")
@@ -103,6 +126,7 @@ final class SessionController {
         cleanup()
         do { try dir.requestStop() } catch { log.error("STOP write failed: \(error)") }
         power.release()
+        currentIsPrivate = false
         state = .idle
         log.info("session \(dir.id) stopped; mic \(micSamples) samples")
         verifyCaptureReleased()

@@ -52,6 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             NSWorkspace.shared.open(self.store.root)
         }
+        status.onTogglePrivateNext = { [weak self] in
+            guard let self else { return }
+            controller.forcePrivateNext.toggle()
+            status.setPrivateNext(controller.forcePrivateNext)
+            log.info("next session private: \(controller.forcePrivateNext)")
+        }
         floating.onClick = { [weak self] in self?.openNote() }
         controller.onStateChange = { [weak self] state in
             DispatchQueue.main.async { self?.render(state) }
@@ -173,9 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log.info("meeting detected in \(app)")
             if controller.current != nil || declinedApp == app { return }
             guard AppDelegate.browserApps.contains(app) else {
-                prompt.show(appName: AppDelegate.promptName(for: app),
-                            onRecord: { [weak self] in self?.controller.start(app: app) },
-                            onSkip: { [weak self] in self?.declinedApp = app })
+                showMeetingPrompt(app: app, info: nil)
                 return
             }
             askBrowser(app: app)
@@ -210,7 +214,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pendingTicks = 0
             pendingIsPlaceholder = false
             placeholderSince = nil
-            log.info("browser meeting tab: '\(info.title)'")
+            // The name of a private call has no business in the log either.
+            log.info(controller.wouldBePrivate(app: app) ? "browser meeting tab found (приватное окно, название не пишем)"
+                                                         : "browser meeting tab: '\(info.title)'")
             showMeetingPrompt(app: app, info: info)
         case .placeholder:
             let isNewApp = pendingBrowserApp != app
@@ -238,8 +244,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showMeetingPrompt(app: String, info: MeetingInfo) {
-        prompt.show(PromptPanel.meeting(appName: AppDelegate.promptName(for: app), title: info.title),
+    /// `info` is nil for a native meeting app, where the card has no title to lead with. A session
+    /// the rules (or the menu override) call private gets the private card instead — and never the
+    /// meeting name, even when the browser has already handed us one.
+    private func showMeetingPrompt(app: String, info: MeetingInfo?) {
+        let spec = controller.wouldBePrivate(app: app)
+            ? PromptPanel.privateMeeting()
+            : PromptPanel.meeting(appName: AppDelegate.promptName(for: app), title: info?.title)
+        prompt.show(spec,
                    onPrimary: { [weak self] in self?.controller.start(app: app, info: info) },
                    onSecondary: { [weak self] in
                        self?.declinedApp = app
@@ -295,7 +307,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pendingIsPlaceholder = false
             placeholderSince = nil
             let app = activeApp ?? "manual"
-            guard AppDelegate.browserApps.contains(app) else {
+            // A private session takes no title from anywhere, so there is nothing to ask the
+            // browser about — and asking would put the meeting name in the AppleScript log.
+            guard AppDelegate.browserApps.contains(app), !controller.wouldBePrivate(app: app) else {
                 controller.start(app: app)
                 return
             }
@@ -313,7 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// legitimately find nothing — that is a hint, not a problem; one retry usually lands.
     private func openNote(retrying: Bool) {
         guard let dir = controller.current else { return }
-        if Obsidian.open(path: dir.notePath()) {
+        if openNote(path: dir.notePath()) {
             if !retrying { render(controller.state) }
             return
         }
@@ -328,14 +342,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A private note lives outside every vault, so `obsidian://open?path=` has nowhere to send it:
+    /// hand the file to whatever opens .md instead.
+    private func openNote(path: String?) -> Bool {
+        guard controller.currentIsPrivate else { return Obsidian.open(path: path) }
+        guard let path, !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return false }
+        return NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
     private func render(_ state: SessionController.State) {
+        status.setPrivateNext(controller.forcePrivateNext)   // the start that used it also spent it
         switch state {
         case .idle:
             status.setRecording(false, detail: nil)   // also clears a problem glyph or a hint
             floating.hide()
         case .recording(let dir):
-            status.setRecording(true, detail: dir.id)
-            floating.show()
+            status.setRecording(true, detail: dir.id, private: controller.currentIsPrivate)
+            floating.show(private: controller.currentIsPrivate)
         }
     }
 }

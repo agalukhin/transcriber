@@ -122,6 +122,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--prompt-test") {
     DispatchQueue.main.async {
         if CommandLine.arguments.contains("stop") {
             prompt.show(PromptPanel.stop(minutes: 3), onPrimary: { print("stop") }, onSecondary: { print("continue") })
+        } else if CommandLine.arguments.contains("private") {
+            prompt.show(PromptPanel.privateMeeting(), onPrimary: { print("record") }, onSecondary: { print("skip") })
         } else {
             // `--prompt-test title «…»` checks the browser card, which leads with the meeting name.
             let j = CommandLine.arguments.firstIndex(of: "title")

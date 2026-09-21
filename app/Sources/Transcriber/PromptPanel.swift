@@ -33,17 +33,20 @@ final class PromptPanel {
                     subtitle: "Записать разговор и завести заметку в вольте?", primary: "Записать", secondary: "Не сейчас", timeout: 90)
     }
 
+    /// A private session gets its own card and no meeting name at all: the point is to show, before
+    /// the first word is recorded, that this one is not going into the work vault.
+    static func privateMeeting() -> Spec {
+        Spec(symbol: "lock.circle", tint: .systemPurple, title: "Приватная запись",
+             subtitle: "Транскрипт уйдёт в «Приватные записи», не в рабочий вольт.",
+             primary: "Записать", secondary: "Не сейчас", timeout: 90)
+    }
+
     static func stop(minutes: Int) -> Spec {
         Spec(symbol: "moon.zzz", tint: .systemOrange, title: "Похоже, встреча закончилась",
              subtitle: "Тишина уже \(minutes) мин. Остановить запись?", primary: "Остановить", secondary: "Продолжить", timeout: 0)
     }
 
     var isShowing: Bool { panel != nil }
-
-    /// Meeting prompt: primary = record, secondary = skip.
-    func show(appName: String, onRecord: @escaping () -> Void, onSkip: @escaping () -> Void) {
-        show(Self.meeting(appName: appName), onPrimary: onRecord, onSecondary: onSkip)
-    }
 
     /// Any card. `timeout` 0 = stays until answered or dismissed; otherwise the secondary action
     /// fires when it elapses.
