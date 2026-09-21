@@ -72,3 +72,18 @@ def test_echo_by_strong_similarity_on_identical_short_line():
 def test_strong_rule_still_needs_actual_time_overlap():
     m = mic(60.0, 70.0, "Хорошо, меня зовут Ярослав")
     assert not is_echo(m, [sys_(80.0, 84.0, "Хорошо, меня зовут Ярослав.")], 0.8, 0.6, strong=0.8)
+
+
+def test_stock_phrase_on_mic_while_speakers_talk_is_residue():
+    from transcriber.echo import is_residue
+    others = [sys_(100.0, 130.0, "Дальше у нас была история с сегментами и фильтрами.")]
+    assert is_residue(mic(110.0, 110.6, "Спасибо."), others)
+    assert is_residue(mic(112.0, 112.9, "Продолжение следует..."), others)
+    assert is_residue(mic(113.0, 113.4, "Спасибо за просмотр!"), others)
+    # владелец благодарит в тишине — это его реплика
+    assert not is_residue(mic(200.0, 200.6, "Спасибо."), others)
+    # содержательная фраза поверх чужой речи — не остаток
+    assert not is_residue(mic(110.0, 112.0, "Спасибо, Паша, за обзор, у меня вопрос."), others)
+    # длинная «реплика» из одного слова — не наш случай, пусть решают другие правила
+    assert not is_residue(mic(110.0, 118.0, "Спасибо."), others)
+    assert not is_residue(mic(110.0, 110.6, None), others)

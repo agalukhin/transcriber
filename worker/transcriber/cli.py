@@ -50,7 +50,7 @@ import yaml
 from . import bench as bench_mod
 from .config import Config, load_config
 from .daemon import Daemon
-from .echo import is_echo
+from .echo import is_echo, is_residue
 from .models import Models, load_models
 from .pipeline import Pipeline, recluster_records
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
@@ -141,6 +141,9 @@ def _refinalize(cfg: Config, session_id: str) -> Path:
         if r.channel == "mic" and is_echo(r, sys_recs, cfg.echo_overlap, cfg.echo_similarity,
                                           cfg.echo_strong_similarity):
             log.info("echo dropped %.1f-%.1f: %s", r.start, r.end, r.text)
+            continue
+        if r.channel == "mic" and is_residue(r, sys_recs):
+            log.info("echo residue dropped %.1f-%.1f: %s", r.start, r.end, r.text)
             continue
         kept.append(r)
     st.records = kept

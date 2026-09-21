@@ -10,7 +10,7 @@ from .aec import EchoSuppressor
 from .asr import Segment, build_prompt
 from .blocks import Block, BlockBuilder
 from .config import Config
-from .echo import is_echo
+from .echo import is_echo, is_residue
 from .pcm import PcmReader, read_range
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .session import Rec, Session, State
@@ -306,6 +306,8 @@ class Pipeline:
             if is_echo(rec, sys_recs, self.cfg.echo_overlap, self.cfg.echo_similarity,
                        self.cfg.echo_strong_similarity):
                 log.info("echo dropped %.1f-%.1f: %s", rec.start, rec.end, rec.text)
+            elif is_residue(rec, sys_recs):
+                log.info("echo residue dropped %.1f-%.1f: %s", rec.start, rec.end, rec.text)
             else:
                 st.records.append(rec)
             changed = True
