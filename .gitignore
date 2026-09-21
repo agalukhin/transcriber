@@ -10,3 +10,4 @@ worker.log
 
 build/
 voices/
+bench/
