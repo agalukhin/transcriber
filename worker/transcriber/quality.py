@@ -19,6 +19,7 @@ PROMPT_KEYWORDS = ("Участники", "Участник", "Термины", "
 LEAK_MIN_WORDS = 2
 LEAK_SHARE = 0.6
 REPEAT_TIMES = 3
+REPEAT_SHARE = 0.5          # доля слов фразы, занятая повтором
 VARIETY_MIN_WORDS = 6
 VARIETY_SHARE = 0.35
 CYRILLIC_SHARE = 0.3
@@ -62,8 +63,12 @@ def repetitive(text: str) -> bool:
     w = tokenize(text)
     if not w:
         return False
-    if any(_max_consecutive(w, n) >= REPEAT_TIMES for n in (1, 2, 3)):
-        return True
+    # Повтор — галлюцинация, только когда он занимает заметную часть фразы: «да, да, да» внутри
+    # живой речи на 30 слов — не повод выбрасывать 25 секунд разговора.
+    for n in (1, 2, 3):
+        k = _max_consecutive(w, n)
+        if k >= REPEAT_TIMES and k * n / len(w) >= REPEAT_SHARE:
+            return True
     return len(w) >= VARIETY_MIN_WORDS and len(set(w)) / len(w) < VARIETY_SHARE
 
 
@@ -81,6 +86,22 @@ def foreign(text: str, language: str = "ru") -> bool:
 def filler_only(text: str) -> bool:
     w = tokenize(text)
     return bool(w) and all(FILLER_RE.match(x) for x in w)
+
+
+# Ярлык промпта в начале реплики («Термина, …», «Термины.») и выдуманный «тег говорящего»
+# («Терминатор Ивановича, М.М.:») — утечка формата, а не речи: срезаем приставку, речь оставляем.
+_LABEL = r"(?:Термин(?:ы|а|ов|атор\w*)?|Участник(?:и|а|ов)?)"
+_FAKE_TAG = re.compile(_LABEL + r"(?:\s+[А-ЯЁ][а-яё]+){0,2},?\s*(?:[А-ЯЁ]\.\s?){1,3}:\s*")
+_LEAD = re.compile(r"^\s*" + _LABEL + r"\s*[,.:…]+\s*")
+
+
+def strip_leak_prefix(text: str) -> str:
+    out = _FAKE_TAG.sub("", text)
+    prev = None
+    while prev != out:
+        prev = out
+        out = _LEAD.sub("", out)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def junk_reason(text: str, prompt_words: set[str], language: str = "ru") -> str | None:

@@ -79,3 +79,22 @@ def test_junk_reason_names_the_rule_and_passes_clean_text():
     assert junk_reason("News Sl coming up.", VOCAB) == "foreign"
     assert junk_reason("Хорошо, давай обсудим контракт", VOCAB) is None
     assert junk_reason("", VOCAB) is None
+
+
+def test_repetition_must_dominate_the_text_to_count():
+    from transcriber.quality import repetitive
+    assert repetitive("Термины. Термины. Термины. Термины.")
+    assert repetitive("Мы так подумали. Мы так подумали. Мы так подумали. Мы так подумали.")
+    # живая речь с «да, да, да» внутри — не повтор-галлюцинация
+    assert not repetitive("Никак. Да, да, да, я здесь. Тогда у меня вопрос к Веронике по поводу собеседований на этой неделе и заявок на команду.")
+    assert not repetitive("А-а-а, всё. А, и ты тоже. Вот видимо он как раз подключился, давайте тогда начнём с первого вопроса повестки.")
+
+
+def test_leaked_label_prefix_is_stripped_not_the_whole_line():
+    from transcriber.quality import strip_leak_prefix
+    assert strip_leak_prefix("Термина, Слава, я на всякий случай ссылку кидал.") == "Слава, я на всякий случай ссылку кидал."
+    assert strip_leak_prefix("Терминатор Ивановича, М.М.: Ага. Таня, слушай, а можно посмотреть метрики?") == "Ага. Таня, слушай, а можно посмотреть метрики?"
+    assert strip_leak_prefix("И потом уже… Терминатор Ивановича, М.М.: Давай.") == "И потом уже… Давай."
+    assert strip_leak_prefix("Термины.") == ""
+    assert strip_leak_prefix("Термины обсудим позже, сначала метрики.") == "Термины обсудим позже, сначала метрики."
+    assert strip_leak_prefix("Обычная фраза.") == "Обычная фраза."

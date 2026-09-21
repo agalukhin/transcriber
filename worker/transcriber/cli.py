@@ -44,7 +44,7 @@ from .daemon import Daemon
 from .echo import is_echo
 from .models import Models, load_models
 from .pipeline import Pipeline, recluster_records
-from .quality import junk_reason, prompt_vocabulary
+from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .speakers import label
 from .session import Session, State
 from .vault import write_raw
@@ -115,6 +115,8 @@ def refinalize(cfg: Config, session_id: str) -> Path:
     st = session.state
     vocabulary = prompt_vocabulary(session.meta.participants, cfg.glossary)
     for r in st.records:
+        if r.text:
+            r.text = strip_leak_prefix(r.text)
         reason = junk_reason(r.text, vocabulary, cfg.language) if r.text else None
         if reason:
             log.info("dropped (%s) %.1f-%.1f: %s", reason, r.start, r.end, r.text)

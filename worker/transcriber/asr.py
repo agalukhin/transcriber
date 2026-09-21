@@ -20,14 +20,15 @@ def clean_text(text: str, hallucinations: list[str]) -> str:
 
 
 def build_prompt(participants: list[str], glossary: list[str], include_participants: bool = False) -> str:
-    """Короткий промпт из терминов: имена whisper охотнее всего пересказывает вместо речи,
-    поэтому «Участники: …» добавляется, только когда участники действительно известны."""
+    """Короткий промпт из терминов, без ярлыков: заголовки вроде «Термины:» whisper принимает за начало
+    реплики и продолжает их («Термины. Термины…», «Термина, Слава, …»). Имена — только когда
+    участники действительно известны."""
     parts = []
     if include_participants and participants:
         names = ["Владислав"] + [p for p in participants if p and p != "Владислав"]
-        parts.append(f"Участники: {', '.join(names)}.")
+        parts.append(f"{', '.join(names)}.")
     if glossary:
-        parts.append(f"Термины: {', '.join(glossary[:GLOSSARY_MAX])}.")
+        parts.append(f"{', '.join(glossary[:GLOSSARY_MAX])}.")
     prompt = " ".join(parts)
     return prompt if len(prompt) <= PROMPT_MAX else prompt[:PROMPT_MAX - 1].rsplit(",", 1)[0] + "."
 

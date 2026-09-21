@@ -11,7 +11,7 @@ from .blocks import Block, BlockBuilder
 from .config import Config
 from .echo import is_echo
 from .pcm import PcmReader, read_range
-from .quality import junk_reason, prompt_vocabulary
+from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .session import Rec, Session, State
 from .speakers import OnlineClusterer, absorb_small_clusters, label, recluster
 from .vad import Segmenter
@@ -175,7 +175,7 @@ class Pipeline:
         tail = self.carry.get(ch, "")
         if not (self.cfg.carry_context and tail):
             return self.prompt
-        return f"{self.prompt} … {tail[-CARRY_MAX:]}".strip()
+        return f"{self.prompt} {tail[-CARRY_MAX:]}".strip()
 
     def _transcribe(self, block: Block, prompt: str) -> list[Segment] | None:
         try:
@@ -216,7 +216,7 @@ class Pipeline:
         for seg in self._retry_leaky_block(block, segments, prompt):
             start = block.map_to_original(seg.start)
             end = max(start, block.map_to_original(seg.end))
-            text = seg.text
+            text = strip_leak_prefix(seg.text)   # приставка-утечка срезается, речь под ней остаётся
             reason = self._reason(text)
             if reason:
                 # Галлюцинация — это не «не распознано», а пустая реплика: в транскрипте её нет.

@@ -360,7 +360,7 @@ def test_previous_block_text_is_carried_into_the_next_prompt(vault, tmp_path):
     cfg, s, p = build(vault, tmp_path / "sessions", asr=asr, **FAST)
     p.step()
     base = p.prompt
-    assert asr.prompts == [base, f"{base} … tone880"]  # хвост прошлого блока — штатный способ whisper
+    assert asr.prompts == [base, f"{base} tone880"]  # хвост прошлого блока, без разделителей-ярлыков
 
     asr2 = FakeAsr()
     d2 = make_session(tmp_path / "sessions", session_id="2026-09-15-1500", title="Без контекста")

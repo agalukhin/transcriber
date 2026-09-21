@@ -11,19 +11,19 @@ def test_clean_strips_hallucinations_and_space():
 
 def test_prompt_is_terms_only_by_default():
     """Имена — главный источник утечки промпта, поэтому по умолчанию их в промпте нет."""
-    assert build_prompt(["Егор Спирин"], ["CDP", "Омни"]) == "Термины: CDP, Омни."
+    assert build_prompt(["Егор Спирин"], ["CDP", "Омни"]) == "CDP, Омни."
     assert build_prompt(["Егор Спирин"], []) == ""
 
 
 def test_prompt_adds_participants_only_when_asked():
     p = build_prompt(["Егор Спирин"], ["CDP"], include_participants=True)
-    assert p == "Участники: Владислав, Егор Спирин. Термины: CDP."
-    assert build_prompt([], ["CDP"], include_participants=True) == "Термины: CDP."
+    assert p == "Владислав, Егор Спирин. CDP."
+    assert build_prompt([], ["CDP"], include_participants=True) == "CDP."
 
 
 def test_prompt_caps_glossary_at_twelve_terms():
     p = build_prompt([], [f"термин{i}" for i in range(200)])
-    assert p.startswith("Термины: термин0,") and "термин11" in p
+    assert p.startswith("термин0,") and "термин11" in p and "Термины" not in p
     assert "термин12" not in p and len(p) <= 600
 
 
