@@ -372,6 +372,81 @@ def test_previous_block_text_is_carried_into_the_next_prompt(vault, tmp_path):
     assert asr2.prompts == [base, base]
 
 
+# ---- подавление эха по звуку -------------------------------------------------
+
+
+ECHO_DELAY = 480          # 30 мс от динамика до микрофона — как на живых записях
+ECHO_GAIN = 0.3
+
+
+def _echo_session(d: Path):
+    """Микрофон слышит только динамики — и один раз самого владельца, когда те молчат.
+
+    В начале — тихий широкополосный разгон: его эхо не дотягивает до порога VAD, но
+    подавителю хватает, чтобы оценить тракт. Без разгона первые секунды любой записи
+    проходят без подавления — подавитель стартует холодным, и это не лечится.
+    """
+    rng = np.random.default_rng(0)
+    warmup = (rng.standard_normal(int(5.0 * SR)) * 0.025).astype(np.float32)
+    for i in range(0, len(warmup), int(0.8 * SR)):       # всплесками: по ним ищется задержка
+        warmup[i + int(0.5 * SR):i + int(0.8 * SR)] = 0.0
+    sys_ = np.concatenate([warmup, tone(2.0, 880), silence(0.8), tone(2.0, 1200), silence(5.0)])
+    echo = ECHO_GAIN * np.concatenate([silence(ECHO_DELAY / SR), sys_])[:len(sys_)]
+    owner = np.zeros(len(sys_), dtype=np.float32)
+    at = int(12.0 * SR)                                  # внутри хвостовой тишины динамиков
+    owner[at:at + int(1.5 * SR)] = tone(1.5, 440)
+    write(d, "mic.pcm", echo + owner)
+    write(d, "sys.pcm", sys_)
+
+
+def test_echo_suppression_leaves_only_the_owner_on_the_mic(vault, tmp_path, caplog):
+    d = make_session(tmp_path / "sessions")
+    _echo_session(d)
+    cfg, s, p = build(vault, tmp_path / "sessions", echo_suppress=True, keep_audio=True, **FAST)
+    with caplog.at_level("INFO", logger="transcriber"):
+        p.finalize()
+    mic = [r for r in s.state.records if r.channel == "mic"]
+    assert [(r.speaker, r.text) for r in mic] == [("Me", "tone440")]
+    assert "echo dropped" not in caplog.text          # текстовому фильтру нечего ловить
+    assert abs(mic[0].start - 12.0) < 0.2
+
+
+def test_echo_suppression_off_keeps_the_old_behaviour(vault, tmp_path, caplog):
+    """Тот же материал без подавления: эхо доходит до ASR, его вылавливает текстовый фильтр."""
+    d = make_session(tmp_path / "sessions")
+    _echo_session(d)
+    cfg, s, p = build(vault, tmp_path / "sessions", keep_audio=True, **FAST)
+    with caplog.at_level("INFO", logger="transcriber"):
+        p.finalize()
+    assert cfg.echo_suppress is False
+    assert [(r.speaker, r.text) for r in s.state.records if r.channel == "mic"] == [("Me", "tone440")]
+    assert "echo dropped" in caplog.text
+
+
+def test_suppression_does_not_stall_when_there_is_no_sys_track(vault, tmp_path):
+    """sys.pcm может вовсе не появиться: опору добиваем тишиной, иначе микрофон завис бы."""
+    d = make_session(tmp_path / "sessions")
+    write(d, "mic.pcm", np.concatenate([silence(0.5), tone(1.0, 440), silence(5.0)]))
+    cfg, s, p = build(vault, tmp_path / "sessions", echo_suppress=True, keep_audio=True, **FAST)
+    p.step()
+    assert [(r.channel, r.text) for r in s.state.records] == [("mic", "tone440")]
+    assert p.has_backlog() is False
+
+
+def test_mic_waits_for_the_sys_track_before_suppression(vault, tmp_path):
+    """Живая запись: sys отстаёт от mic — хвост микрофона ждёт опоры, а не идёт вслепую."""
+    d = make_session(tmp_path / "sessions")
+    write(d, "mic.pcm", np.concatenate([silence(0.5), tone(1.0, 440), silence(5.0)]))
+    write(d, "sys.pcm", silence(2.0))
+    cfg, s, p = build(vault, tmp_path / "sessions", echo_suppress=True, keep_audio=True, **FAST)
+    p.step()
+    assert s.state.mic_offset <= 2 * SR                 # дальше опоры микрофон не ушёл
+    write(d, "sys.pcm", silence(6.5))
+    p.step()
+    p.finalize()
+    assert [(r.channel, r.text) for r in s.state.records] == [("mic", "tone440")]
+
+
 # ---- голосовые профили -------------------------------------------------------
 
 

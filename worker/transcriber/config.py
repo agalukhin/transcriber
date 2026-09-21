@@ -45,6 +45,9 @@ class Config:
     echo_similarity: float = 0.6
     echo_strong_similarity: float = 0.8   # дословный повтор — эхо даже при коротком перекрытии
     echo_wait_s: float = 1.0
+    echo_suppress: bool = False   # вычитать эхо динамиков из микрофона по дорожке sys (aec.py)
+    echo_beta: float = 2.0        # во сколько раз смелее вычитаем: запас на недооценку тракта
+    echo_floor: float = 0.05      # ниже этого коэффициента корзину не опускаем — останется дыра
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM"
     language: str = "ru"

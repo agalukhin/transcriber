@@ -6,6 +6,7 @@ from typing import Callable
 
 import numpy as np
 
+from .aec import EchoSuppressor
 from .asr import Segment, build_prompt
 from .blocks import Block, BlockBuilder
 from .config import Config
@@ -116,6 +117,11 @@ class Pipeline:
             ch: BlockBuilder(cfg.sample_rate, cfg.block_min_s, cfg.block_max_s,
                              cfg.block_gap_s, cfg.block_gap_keep_s, cfg.block_idle_s)
             for ch in ("mic", "sys")}
+        # подавитель живёт вместе с конвейером: после перезапуска воркера он стартует холодным и
+        # первые секунды записи идут без подавления, пока не наберётся статистика тракта
+        self.aec = EchoSuppressor(cfg.sample_rate, beta=cfg.echo_beta,
+                                  floor=cfg.echo_floor) if cfg.echo_suppress else None
+        self._finalizing = False
         self.carry = {"mic": "", "sys": ""}   # хвост прошлого блока канала; после перезапуска пуст
         self.clusterer = OnlineClusterer.from_history(cfg.speaker_similarity, st.embeddings, st.speaker_of_emb)
         self.prompt = build_prompt(session.meta.participants, cfg.glossary,
@@ -133,7 +139,7 @@ class Pipeline:
         changed = False
         cap = max(1, int(self.cfg.sample_rate * self.cfg.read_chunk_s))
         for ch in ("mic", "sys"):
-            audio = self.readers[ch].read_all(max_samples=cap)   # бэклог за сутки не тянем в память целиком
+            audio = self._read(ch, cap)   # бэклог за сутки не тянем в память целиком
             blocks: list[Block] = []
             if audio.size:
                 for u in self.segs[ch].feed(audio):
@@ -157,6 +163,33 @@ class Pipeline:
     def has_backlog(self) -> bool:
         """Есть ли непрочитанное аудио — step() читает порциями, демон должен продолжать крутить."""
         return any(r.available() > 0 for r in self.readers.values())
+
+    def _read(self, ch: str, cap: int) -> np.ndarray:
+        """Порция канала. Микрофон при включённом подавлении читается только вместе с опорой.
+
+        Опора — тот же отрезок дорожки динамиков. Если sys ещё не дописан (живая запись, mic
+        успел раньше), хвост микрофона возвращаем читателю и заберём следующим шагом: пускать
+        микрофон через подавитель без опоры нельзя — он примет эхо за речь владельца. На
+        финализации (и когда дорожки динамиков нет вовсе) недостающее добиваем тишиной,
+        иначе хвост записи завис бы навсегда.
+        """
+        reader = self.readers[ch]
+        if ch != "mic" or self.aec is None:
+            return reader.read_all(max_samples=cap)
+        start = reader.offset
+        audio = reader.read_all(max_samples=cap)
+        if not audio.size:
+            return audio
+        ref = read_range(self.s.sys_pcm, start, start + len(audio))
+        if len(ref) < len(audio):
+            if self._finalizing or not self.s.sys_pcm.exists():
+                ref = np.concatenate([ref, np.zeros(len(audio) - len(ref), dtype=np.float32)])
+            else:
+                reader.offset = start + len(ref)
+                audio = audio[:len(ref)]
+                if not audio.size:
+                    return audio
+        return self.aec.process(audio, ref[:len(audio)])
 
     def _resume_point(self, ch: str) -> int:
         """Точка продолжения после падения: начало открытого блока, иначе граница сегментатора.
@@ -282,8 +315,13 @@ class Pipeline:
     # ---- finalization -----------------------------------------------------
 
     def finalize(self) -> None:
+        self._finalizing = True                    # опору под хвост микрофона добиваем тишиной
         while self.step() or self.has_backlog():   # step() читает порциями — дочитываем весь хвост
             pass
+        if self.aec is not None:
+            for u in self.segs["mic"].feed(self.aec.flush()):   # хвост короче окна STFT
+                for b in self.builders["mic"].add(u):
+                    self._handle_block("mic", b)
         for ch in ("mic", "sys"):
             for u in self.segs[ch].flush():        # recording may have stopped mid-speech
                 for b in self.builders[ch].add(u):
