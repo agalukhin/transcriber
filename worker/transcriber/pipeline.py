@@ -62,17 +62,23 @@ def name_clusters(cfg: Config, st: State, library: VoiceLibrary | None = None) -
     return mapping
 
 
-def recluster_records(cfg: Config, st: State, library: VoiceLibrary | None = None) -> None:
+def recluster_records(cfg: Config, st: State, library: VoiceLibrary | None = None,
+                      private: bool = False) -> None:
     """Глобальная перекластеризация по всем эмбеддингам сессии + перелейблинг sys-реплик.
 
     Общая для finalize() и `transcriber refinalize`, поэтому вынесена из класса.
     После перекластеризации кластеры сверяются с библиотекой голосов: опознанные получают
     имя человека вместо «Speaker N», индекс кластера остаётся в ``speaker_of_emb``.
+
+    У приватной записи имён нет вовсе: библиотека не читается, все остаются «Speaker N» —
+    приватный разговор не должен опознаваться по рабочим голосам и попадать в библиотеку.
     """
     if len(st.embeddings) >= 2:
         new = recluster(np.asarray(st.embeddings, dtype=np.float32), cfg.speaker_similarity)
         st.speaker_of_emb = absorb_small_clusters(new, st.embeddings)
-    names = name_clusters(cfg, st, library)
+    if private:
+        st.speaker_names = {}
+    names: dict[int, str] = {} if private else name_clusters(cfg, st, library)
     if not st.embeddings:
         return
 
@@ -334,7 +340,7 @@ class Pipeline:
         self.s.state.sys_offset = self._resume_point("sys")
         self._flush_pending_mic(force=True)
         st = self.s.state
-        recluster_records(self.cfg, st)
+        recluster_records(self.cfg, st, private=self.s.meta.private)
         st.status = "finalized"
         write_raw(self.cfg, self.s, f"финализирован {datetime.now().strftime('%H:%M')}")
         self.s.save_state()

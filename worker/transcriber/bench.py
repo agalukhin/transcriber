@@ -285,7 +285,7 @@ def run_bench(cfg: Config, bench_id: str, label: str, overrides: dict | None = N
         # keep_audio — чтобы finalize() не снёс копию эталона посреди прогона
         run_cfg = replace(cfg, **(overrides or {}))
         run_cfg = replace(run_cfg, vault_root=sandbox / "vault", sessions_dir=sandbox / "sessions",
-                          bench_dir=cfg.bench_dir, keep_audio=True)
+                          private_dir=sandbox / "private", bench_dir=cfg.bench_dir, keep_audio=True)
 
         m = models or load_models(run_cfg)
         with LogCapture() as captured:

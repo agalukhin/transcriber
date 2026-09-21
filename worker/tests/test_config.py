@@ -84,3 +84,23 @@ def test_voice_settings_have_defaults_and_expand_paths(tmp_path):
     cfg = load_config(yaml_path=tmp_path / "c.yaml", glossary_path=tmp_path / "missing.txt")
     assert cfg.voices_dir == Path("~/голоса").expanduser()
     assert cfg.voice_match_similarity == 0.6 and cfg.voice_min_samples == 5
+
+
+def test_private_dir_has_a_default_and_is_expanded(tmp_path):
+    cfg = load_config(yaml_path=tmp_path / "missing.yaml", glossary_path=tmp_path / "missing.txt")
+    assert cfg.private_dir == Path("~/Documents/Приватные записи").expanduser()
+    assert cfg.private_dir.is_absolute()
+
+    (tmp_path / "c.yaml").write_text("private_dir: ~/Приватное\n")
+    cfg = load_config(yaml_path=tmp_path / "c.yaml", glossary_path=tmp_path / "missing.txt")
+    assert cfg.private_dir == Path("~/Приватное").expanduser()
+
+
+def test_shipped_yaml_keeps_private_dir_outside_the_vault():
+    import yaml as _yaml
+
+    from transcriber.config import ROOT
+
+    data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
+    assert "Приватные записи" in data["private_dir"]
+    assert data["vault_root"] not in data["private_dir"]

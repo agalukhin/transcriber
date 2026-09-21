@@ -20,6 +20,7 @@ VOICES_DIR = ROOT / "voices"
 @dataclass
 class Config:
     vault_root: Path = Path("~/Documents/Obsidian Vault/Вольт воркфлоу").expanduser()
+    private_dir: Path = Path("~/Documents/Приватные записи").expanduser()   # приватные записи мимо вольта
     sessions_dir: Path = ROOT / "sessions"
     bench_dir: Path = ROOT / "bench"   # эталонные записи стенда качества и прогоны по ним
     raw_subdir: str = "Memory/50 · Raw/Local"
@@ -68,7 +69,7 @@ def load_config(yaml_path: Path | None = None, glossary_path: Path | None = None
     if unknown:
         log.warning("config.yaml: unknown keys ignored: %s", ", ".join(unknown))
     kwargs = {k: v for k, v in data.items() if k in known}
-    for key in ("vault_root", "sessions_dir", "voices_dir", "bench_dir"):
+    for key in ("vault_root", "private_dir", "sessions_dir", "voices_dir", "bench_dir"):
         if key in kwargs:
             kwargs[key] = Path(kwargs[key]).expanduser()
     if glossary_path.exists():

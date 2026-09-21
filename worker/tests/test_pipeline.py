@@ -518,3 +518,39 @@ def test_names_survive_a_second_finalization_and_disappear_with_the_profile(vaul
     (tmp_path / "voices" / "Дарья.json").unlink()
     recluster_records(cfg, st)                                  # профиль удалили — имя уходит
     assert [r.speaker for r in st.records] == ["Speaker 1"] * 3 and st.speaker_names == {}
+
+
+# ---- приватная запись --------------------------------------------------------
+
+
+class GuardedLibrary:
+    """Библиотека, которую нельзя читать: приватная сессия не должна к ней прикасаться."""
+
+    def names(self):
+        raise AssertionError("библиотека голосов не читается на приватной сессии")
+
+    def match(self, centroid):
+        raise AssertionError("библиотека голосов не читается на приватной сессии")
+
+
+def test_private_session_keeps_speaker_n_and_never_reads_the_library(vault, tmp_path, private_dir):
+    from tests.conftest import vault_files
+
+    d = make_session(tmp_path / "sessions", private=True)
+    _voiced(d)
+    seed_voice(tmp_path, "Ярослав Серов", [one_hot(880)])
+    cfg, s, p = build(vault, tmp_path / "sessions", private_dir=private_dir, **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {}
+    assert {r.speaker for r in s.state.records if r.channel == "sys"} == {"Speaker 1"}
+    raw = Path(s.state.raw_path)
+    assert raw == private_dir / "2026-09-15-1430/transcript.md"
+    assert "Опознаны по голосу" not in raw.read_text()
+    assert vault_files(vault) == []
+
+
+def test_recluster_of_a_private_session_does_not_touch_the_library(vault, tmp_path):
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", voice_min_samples=3)
+    st = _state_with([[0, 1, 0]] * 3, [0, 0, 0])
+    recluster_records(cfg, st, library=GuardedLibrary(), private=True)
+    assert [r.speaker for r in st.records] == ["Speaker 1"] * 3 and st.speaker_names == {}

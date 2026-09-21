@@ -93,3 +93,90 @@ def test_n_speakers_counts_sys_speakers_without_embeddings(vault):
                speaker_of_emb=[0])
     s = Session(vault / "s", meta(), st)
     assert "Говорящих на канале собеседников: 2" in write_raw(cfg, s, status_text="идёт запись").read_text()
+
+
+# ---- приватная запись: мимо вольта ------------------------------------------
+
+
+def private_meta(**kw):
+    m = meta(**kw)
+    m.private = True
+    return m
+
+
+def test_private_paths_leave_the_vault(vault, private_dir):
+    cfg = Config(vault_root=vault, private_dir=private_dir)
+    from transcriber.vault import note_path, raw_path
+
+    assert raw_path(cfg, private_meta()) == private_dir / "2026-09-15-1430/transcript.md"
+    assert note_path(cfg, private_meta()) == private_dir / "2026-09-15-1430/notes.md"
+
+
+def test_private_raw_has_no_frontmatter_but_the_same_body(vault, private_dir):
+    recs = [Rec("mic", 0.5, 2.0, "Привет.", "Me", None),
+            Rec("sys", 2.1, 4.0, "Привет, слышно?", "Speaker 1", 0)]
+    text = render_raw(private_meta(), recs, n_speakers=1, status_text="идёт запись")
+    assert not text.startswith("---")
+    assert "type: raw" not in text and "tags: [raw]" not in text
+    assert text.startswith("# Синк по CDP / параметры — 2026-09-15 14:30")
+    assert "Приватная запись. Вне рабочего вольта." in text
+    body = text.split("## Полный транскрипт\n\n")[1]
+    assert [x.strip() for x in body.split("\n\n")[0:2]] == ["Me: Привет.", "Speaker 1: Привет, слышно?"]
+
+
+def test_private_session_writes_nothing_into_the_vault(vault, private_dir):
+    from tests.conftest import vault_files
+
+    cfg = Config(vault_root=vault, private_dir=private_dir)
+    s = Session(vault / "s", private_meta(), State(records=[Rec("mic", 0.5, 2.0, "Привет.", "Me", None)]))
+    p = write_raw(cfg, s, status_text="идёт запись")
+    n = ensure_stub(cfg, s)
+    assert p == private_dir / "2026-09-15-1430/transcript.md" and p.exists()
+    assert n == private_dir / "2026-09-15-1430/notes.md" and n.exists()
+    assert s.state.raw_path == str(p) and s.state.note_path == str(n)
+    assert vault_files(vault) == []
+
+
+def test_private_notes_are_plain_and_never_overwritten(vault, private_dir):
+    cfg = Config(vault_root=vault, private_dir=private_dir)
+    s = Session(vault / "s", private_meta(), State())
+    n = ensure_stub(cfg, s)
+    body = n.read_text()
+    assert body == "# Заметки — 2026-09-15 14:30\n\n"
+    assert "---" not in body and "[[" not in body and "stub" not in body
+    n.write_text(body + "моя мысль\n")
+    assert ensure_stub(cfg, s) == n and "моя мысль" in n.read_text()
+
+
+def test_private_files_are_readable_only_by_the_owner(vault, private_dir):
+    cfg = Config(vault_root=vault, private_dir=private_dir)
+    s = Session(vault / "s", private_meta(), State())
+    p = write_raw(cfg, s, status_text="идёт запись")
+    n = ensure_stub(cfg, s)
+    assert (p.stat().st_mode & 0o777) == 0o600
+    assert (n.stat().st_mode & 0o777) == 0o600
+    assert (p.parent.stat().st_mode & 0o777) == 0o700
+    assert (private_dir.stat().st_mode & 0o777) == 0o700
+
+
+def test_private_paths_are_pinned_after_first_write(vault, private_dir):
+    cfg = Config(vault_root=vault, private_dir=private_dir)
+    s = Session(vault / "s", private_meta(), State())
+    p1, n1 = write_raw(cfg, s, status_text="идёт запись"), ensure_stub(cfg, s)
+    s.meta.title = "Переименовали на ходу"
+    assert write_raw(cfg, s, status_text="идёт запись") == p1
+    assert ensure_stub(cfg, s) == n1
+    assert len(list((private_dir / "2026-09-15-1430").iterdir())) == 2
+
+
+def test_untouched_stub_is_told_from_one_with_thoughts(vault):
+    from transcriber.vault import is_untouched_stub
+
+    cfg = Config(vault_root=vault)
+    s = Session(vault / "s", meta(), State())
+    write_raw(cfg, s, status_text="идёт запись")
+    stub = ensure_stub(cfg, s).read_text()
+    assert is_untouched_stub(stub) is True
+    assert is_untouched_stub(stub + "\nмоя мысль\n") is False
+    assert is_untouched_stub(stub.replace("tags: [meeting, stub]", "tags: [meeting]")) is False
+    assert is_untouched_stub("просто текст без фронт-маттера") is False

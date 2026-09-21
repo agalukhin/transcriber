@@ -315,6 +315,19 @@ def test_bench_ignores_an_attempt_to_redirect_the_run_into_the_real_vault(vault,
     assert (run / "raw.md").exists() and _vault_files(vault) == []
 
 
+def test_bench_keeps_a_private_reference_recording_inside_the_sandbox(vault, tmp_path, private_dir):
+    """Эталон с `private: true` не должен писать в рабочий каталог приватных записей."""
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", bench_dir=tmp_path / "bench",
+                 private_dir=private_dir)
+    d = _synthetic_bench(cfg.bench_dir)
+    meta = json.loads((d / "meta.json").read_text())
+    meta["private"] = True
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+    run = bench.run_bench(cfg, "synthetic", "приватный", models=fake_models())
+    assert (run / "raw.md").exists() and _vault_files(vault) == []
+    assert not private_dir.exists()
+
+
 # ---- команды CLI --------------------------------------------------------------
 
 

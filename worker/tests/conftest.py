@@ -92,16 +92,20 @@ class FakeEmbedder:
 
 
 def make_session(sessions_dir: Path, session_id: str = "2026-09-15-1430", app: str = "kontur.talk",
-                 title: str = "Тестовая встреча", participants: list[str] | None = None) -> Path:
+                 title: str = "Тестовая встреча", participants: list[str] | None = None,
+                 private: bool = False) -> Path:
     d = sessions_dir / session_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "meta.json").write_text(json.dumps({
+    meta = {
         "id": session_id,
         "started_at": "2026-09-15T14:30:00+03:00",
         "app": app,
         "title": title,
         "participants": participants or ["Егор Спирин"],
-    }, ensure_ascii=False))
+    }
+    if private:
+        meta["private"] = True
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
     return d
 
 
@@ -111,6 +115,17 @@ def vault(tmp_path: Path) -> Path:
     (root / "Memory/50 · Raw/Local").mkdir(parents=True)
     (root / "Memory/30 · Meetings").mkdir(parents=True)
     return root
+
+
+@pytest.fixture
+def private_dir(tmp_path: Path) -> Path:
+    """Каталог приватных записей в тестах — временный: рабочий ~/Documents трогать нельзя."""
+    return tmp_path / "private"
+
+
+def vault_files(vault: Path) -> list[Path]:
+    """Всё, что лежит в вольте: приватная сессия не должна оставить там ни файла."""
+    return [p for p in vault.rglob("*") if p.is_file()]
 
 
 @pytest.fixture(autouse=True)

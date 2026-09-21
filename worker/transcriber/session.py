@@ -14,6 +14,7 @@ class Meta:
     app: str = "manual"
     title: str = ""
     participants: list[str] = field(default_factory=list)
+    private: bool = False      # приложение пометило запись приватной: терапия в рабочий вольт не идёт
 
     @classmethod
     def from_dict(cls, d: dict) -> "Meta":
@@ -21,7 +22,8 @@ class Meta:
         if started.tzinfo is None:                 # writer omitted the offset — treat as local time
             started = started.astimezone()
         return cls(id=d["id"], started_at=started, app=d.get("app", "manual"),
-                   title=d.get("title", "") or "", participants=list(d.get("participants") or []))
+                   title=d.get("title", "") or "", participants=list(d.get("participants") or []),
+                   private=bool(d.get("private", False)))
 
 
 @dataclass

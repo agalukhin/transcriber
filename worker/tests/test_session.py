@@ -69,3 +69,17 @@ def test_naive_started_at_gets_local_timezone(tmp_path):
     s = Session.load(d)
     assert s.meta.started_at.tzinfo is not None
     assert (s.meta.started_at.hour, s.meta.started_at.minute) == (14, 30)
+
+
+def test_private_flag_is_parsed_and_defaults_to_false(tmp_path):
+    assert Session.load(make_session(tmp_path)).meta.private is False
+    d = make_session(tmp_path / "p", private=True)
+    assert Session.load(d).meta.private is True
+
+
+def test_private_flag_survives_a_non_boolean_value(tmp_path):
+    d = make_session(tmp_path)
+    meta = json.loads((d / "meta.json").read_text())
+    meta["private"] = "true"          # Swift мог записать строкой — вольт всё равно бережём
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+    assert Session.load(d).meta.private is True
