@@ -42,10 +42,10 @@ private func tempConfig() -> URL {
 
 @Test func windowBoundariesAreInclusive() {
     let rules = PrivacyRules.defaults
-    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 15, 44)))
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 15, 45)))
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 17, 30)))
-    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 17, 31)))
+    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 15, 59)))
+    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 16, 0)))
+    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 16, 50)))
+    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 16, 51)))
 }
 
 @Test func customRulesFromJSON() throws {

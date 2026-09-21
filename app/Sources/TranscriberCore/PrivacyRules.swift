@@ -33,8 +33,8 @@ public struct PrivacyRules: Codable, Equatable {
     }
 
     public static let defaults = PrivacyRules(
-        windows: [PrivateWindow(weekday: 2, from: "15:45", to: "17:30"),
-                  PrivateWindow(weekday: 5, from: "19:45", to: "21:30")],
+        windows: [PrivateWindow(weekday: 2, from: "16:00", to: "16:50"),
+                  PrivateWindow(weekday: 5, from: "20:00", to: "20:50")],
         apps: ["us.zoom"])
 
     public func isPrivate(app: String, at date: Date, calendar: Calendar = .current) -> Bool {
