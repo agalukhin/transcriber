@@ -87,3 +87,10 @@ def test_stock_phrase_on_mic_while_speakers_talk_is_residue():
     # длинная «реплика» из одного слова — не наш случай, пусть решают другие правила
     assert not is_residue(mic(110.0, 118.0, "Спасибо."), others)
     assert not is_residue(mic(110.0, 110.6, None), others)
+
+
+def test_residue_also_in_short_pauses_between_speaker_phrases():
+    from transcriber.echo import is_residue
+    others = [sys_(100.0, 110.0, "Первая фраза."), sys_(113.0, 120.0, "Вторая фраза.")]
+    assert is_residue(mic(111.0, 111.5, "Спасибо."), others)        # пауза 3 с между фразами
+    assert not is_residue(mic(130.0, 130.5, "Спасибо."), others)    # 10 с тишины после — уже владелец

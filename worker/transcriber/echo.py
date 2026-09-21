@@ -43,6 +43,7 @@ def is_echo(m: Rec, others: list[Rec], overlap: float, sim: float, strong: float
 STOCK_PHRASES = {"спасибо", "спасибо за просмотр", "спасибо за внимание", "продолжение следует",
                  "всем пока", "пока", "до свидания", "угу", "ага", "да"}
 RESIDUE_MAX_S = 2.0
+RESIDUE_MARGIN_S = 2.0   # остаток эха всплывает и в паузах между фразами собеседника
 
 
 def is_residue(m: Rec, others: list[Rec]) -> bool:
@@ -55,4 +56,5 @@ def is_residue(m: Rec, others: list[Rec]) -> bool:
         return False
     if normalize(m.text) not in STOCK_PHRASES:
         return False
-    return any(o.text and min(m.end, o.end) - max(m.start, o.start) > 0 for o in others)
+    return any(o.text and min(m.end, o.end + RESIDUE_MARGIN_S) - max(m.start, o.start - RESIDUE_MARGIN_S) > 0
+               for o in others)
