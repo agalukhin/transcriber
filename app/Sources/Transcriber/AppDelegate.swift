@@ -179,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log.info("meeting detected in \(app)")
             if controller.current != nil || declinedApp == app { return }
             guard AppDelegate.browserApps.contains(app) else {
-                showMeetingPrompt(app: app, info: nil)
+                showMeetingPrompt(app: app, info: nil, workContext: false)
                 return
             }
             askBrowser(app: app)
@@ -202,11 +202,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func askBrowser(app: String) {
         pollQueue.async { [weak self] in
             let state = BrowserTabs.meetingTabState(forBrowser: app)
-            DispatchQueue.main.async { self?.handleBrowserState(state, app: app) }
+            // One verdict per detection: the log line, the prompt and the session that follows
+            // all carry this one along instead of each asking the browser again — two answers to
+            // «приватная ли» about the same meeting is exactly the bug worth avoiding.
+            let work = SessionController.workContext(app: app)
+            DispatchQueue.main.async { self?.handleBrowserState(state, app: app, workContext: work) }
         }
     }
 
-    private func handleBrowserState(_ state: BrowserTabs.MeetingTabState, app: String) {
+    private func handleBrowserState(_ state: BrowserTabs.MeetingTabState, app: String, workContext: Bool) {
         guard controller.current == nil, declinedApp != app else { return }
         switch state {
         case .ready(let info):
@@ -215,9 +219,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pendingIsPlaceholder = false
             placeholderSince = nil
             // The name of a private call has no business in the log either.
-            log.info(controller.wouldBePrivate(app: app) ? "browser meeting tab found (приватное окно, название не пишем)"
-                                                         : "browser meeting tab: '\(info.title)'")
-            showMeetingPrompt(app: app, info: info)
+            log.info(controller.wouldBePrivate(app: app, workContext: workContext)
+                        ? "browser meeting tab found (приватное окно, название не пишем)"
+                        : "browser meeting tab: '\(info.title)'")
+            showMeetingPrompt(app: app, info: info, workContext: workContext)
         case .placeholder:
             let isNewApp = pendingBrowserApp != app
             if isNewApp || !pendingIsPlaceholder {
@@ -232,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingTicks = 0
                 pendingIsPlaceholder = false
                 placeholderSince = nil
-                showMeetingPrompt(app: app, info: MeetingInfo(title: "", participants: []))
+                showMeetingPrompt(app: app, info: MeetingInfo(title: "", participants: []), workContext: workContext)
             }
         case .none:
             if pendingBrowserApp != app {
@@ -247,12 +252,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `info` is nil for a native meeting app, where the card has no title to lead with. A session
     /// the rules (or the menu override) call private gets the private card instead — and never the
     /// meeting name, even when the browser has already handed us one.
-    private func showMeetingPrompt(app: String, info: MeetingInfo?) {
-        let spec = controller.wouldBePrivate(app: app)
+    private func showMeetingPrompt(app: String, info: MeetingInfo?, workContext: Bool) {
+        let spec = controller.wouldBePrivate(app: app, workContext: workContext)
             ? PromptPanel.privateMeeting()
             : PromptPanel.meeting(appName: AppDelegate.promptName(for: app), title: info?.title)
         prompt.show(spec,
-                   onPrimary: { [weak self] in self?.controller.start(app: app, info: info) },
+                   onPrimary: { [weak self] in self?.controller.start(app: app, info: info, workContext: workContext) },
                    onSecondary: { [weak self] in
                        self?.declinedApp = app
                        self?.pendingBrowserApp = nil
@@ -307,17 +312,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pendingIsPlaceholder = false
             placeholderSince = nil
             let app = activeApp ?? "manual"
-            // A private session takes no title from anywhere, so there is nothing to ask the
-            // browser about — and asking would put the meeting name in the AppleScript log.
-            guard AppDelegate.browserApps.contains(app), !controller.wouldBePrivate(app: app) else {
+            guard AppDelegate.browserApps.contains(app) else {
                 controller.start(app: app)
                 return
             }
-            // Started by hand while a browser holds the mic — the tab still knows the title.
+            // Inside a browser even «приватная ли» depends on the tabs — a Толк call in a therapy
+            // slot is work — and AppleScript has no business on the main thread.
             pollQueue.async { [weak self] in
-                let info = BrowserTabs.meetingInfo(forBrowser: app)
-                DispatchQueue.main.async { self?.controller.start(app: app, info: info) }
+                let work = SessionController.workContext(app: app)
+                DispatchQueue.main.async { self?.startManually(app: app, workContext: work) }
             }
+        }
+    }
+
+    /// Second half of a manual start in a browser: the verdict belongs on the main thread (the
+    /// menu override lives there), the title lookup does not. A private session takes no title
+    /// from anywhere, so there is nothing to ask the browser about — and asking would put the
+    /// meeting name in the AppleScript log.
+    private func startManually(app: String, workContext: Bool) {
+        guard !controller.wouldBePrivate(app: app, workContext: workContext) else {
+            controller.start(app: app, workContext: workContext)
+            return
+        }
+        // Started by hand while a browser holds the mic — the tab still knows the title.
+        pollQueue.async { [weak self] in
+            let info = BrowserTabs.meetingInfo(forBrowser: app)
+            DispatchQueue.main.async { self?.controller.start(app: app, info: info, workContext: workContext) }
         }
     }
 

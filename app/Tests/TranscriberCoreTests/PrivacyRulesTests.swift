@@ -23,8 +23,8 @@ private func tempConfig() -> URL {
 
 @Test func therapyHourIsPrivate() {
     let rules = PrivacyRules.defaults
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 16, 1)))    // та самая встреча
-    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(24, 20, 10)))
+    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 1)))    // та самая встреча
+    #expect(rules.isPrivate(app: "com.apple.Safari", at: at(24, 20, 10)))
 }
 
 @Test func workHourInTalkIsNotPrivate() {
@@ -32,6 +32,23 @@ private func tempConfig() -> URL {
     #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 14, 0)))
     #expect(!rules.isPrivate(app: "kontur.talk", at: at(24, 11, 30)))
     #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(22, 16, 1)))   // вторник, то же время
+}
+
+/// Терапии в Толке не бывает, а рабочие встречи бывают только там — поэтому Толк перебивает окно.
+@Test func talkIsNeverPrivateEvenInsideAWindow() {
+    let rules = PrivacyRules.defaults
+    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 16, 10)))
+    #expect(!rules.isPrivate(app: "kontur.talk", at: at(24, 20, 10)))
+    #expect(!rules.isPrivate(app: "kontur.talk.helper", at: at(21, 16, 10)))   // префикс, не точное совпадение
+}
+
+/// В браузере bundle id не говорит ничего: рабочий звонок узнаётся только по открытой вкладке,
+/// и ответ на этот вопрос приходит снаружи, флагом `workContext`.
+@Test func workContextInBrowserBeatsTheWindow() {
+    let rules = PrivacyRules.defaults
+    #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 10), workContext: true))
+    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 10), workContext: false))
+    #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(21, 14, 0), workContext: false))
 }
 
 @Test func zoomIsPrivateAtAnyTime() {
@@ -42,10 +59,10 @@ private func tempConfig() -> URL {
 
 @Test func windowBoundariesAreInclusive() {
     let rules = PrivacyRules.defaults
-    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 15, 59)))
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 16, 0)))
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 16, 50)))
-    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 16, 51)))
+    #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(21, 15, 59)))
+    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 0)))
+    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 50)))
+    #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 51)))
 }
 
 @Test func customRulesFromJSON() throws {
@@ -57,9 +74,27 @@ private func tempConfig() -> URL {
     let rules = PrivacyRules.load(from: url)
     #expect(rules.windows == [PrivateWindow(weekday: 3, from: "09:00", to: "10:00")])
     #expect(calendar.component(.weekday, from: at(22, 9, 30)) == 3)   // вторник
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(22, 9, 30)))
+    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(22, 9, 30)))
     #expect(rules.isPrivate(app: "com.example.diary", at: at(21, 12, 0)))
-    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 16, 1)))   // дефолтные окна больше не действуют
+    #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 1)))   // дефолтные окна больше не действуют
+    // Ключей workApps/workHosts в файле нет — берутся дефолты, Толк остаётся рабочим.
+    #expect(rules.workApps == PrivacyRules.defaultWorkApps)
+    #expect(rules.workHosts == PrivacyRules.defaultWorkHosts)
+    #expect(!rules.isPrivate(app: "kontur.talk", at: at(22, 9, 30)))
+}
+
+@Test func workKeysComeFromJSONWhenPresent() throws {
+    let url = tempConfig()
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try """
+    {"privacy": {"windows": [{"weekday": 2, "from": "16:00", "to": "16:50"}], "apps": [], \
+    "workApps": ["com.example.work"], "workHosts": ["calls.example.com"]}}
+    """.write(to: url, atomically: true, encoding: .utf8)
+    let rules = PrivacyRules.load(from: url)
+    #expect(rules.workApps == ["com.example.work"])
+    #expect(rules.workHosts == ["calls.example.com"])
+    #expect(!rules.isPrivate(app: "com.example.work", at: at(21, 16, 10)))
+    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 16, 10)))   // список переопределён целиком
 }
 
 @Test func missingFileIsWrittenWithDefaults() throws {
@@ -69,7 +104,10 @@ private func tempConfig() -> URL {
     let written = PrivacyRules.load(from: url)   // второй заход читает уже файл, не ветку «нет файла»
     #expect(written == .defaults)
     let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
-    #expect(json["privacy"] != nil)
+    let privacy = json["privacy"] as? [String: Any]
+    #expect(privacy != nil)
+    #expect(privacy?["workApps"] != nil)    // новые ключи видны в файле, есть что править руками
+    #expect(privacy?["workHosts"] != nil)
     #expect(json["_comment"] != nil)   // подсказка про нумерацию дней недели для ручной правки
 }
 
@@ -94,6 +132,6 @@ private func tempConfig() -> URL {
     let rules = PrivacyRules(windows: [PrivateWindow(weekday: 2, from: "четыре", to: "17:30"),
                                        PrivateWindow(weekday: 2, from: "19:00", to: "20:00")],
                              apps: [])
-    #expect(!rules.isPrivate(app: "kontur.talk", at: at(21, 16, 1)))
-    #expect(rules.isPrivate(app: "kontur.talk", at: at(21, 19, 30)))
+    #expect(!rules.isPrivate(app: "com.google.Chrome", at: at(21, 16, 1)))
+    #expect(rules.isPrivate(app: "com.google.Chrome", at: at(21, 19, 30)))
 }

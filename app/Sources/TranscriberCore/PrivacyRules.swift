@@ -16,29 +16,73 @@ public struct PrivateWindow: Codable, Equatable {
 }
 
 /// What must never reach the work vault. Two independent triggers, either one is enough:
-/// a bundle-ID prefix (work calls happen only in Толк, so anything in Zoom is personal) and a
-/// weekly time window. A session marked private tells the worker to write the transcript into
-/// `~/Documents/Приватные записи/` instead of the vault.
+/// a bundle-ID prefix (therapy happens in Zoom) and a weekly time window. A session marked
+/// private tells the worker to write the transcript into `~/Documents/Приватные записи/` instead
+/// of the vault.
 ///
 /// Both ends of a window are inclusive and the windows are padded around the real appointment:
 /// the cost of a false positive is one note in the wrong folder, the cost of a false negative is
-/// a therapy transcript in a work vault.
+/// a therapy transcript in a work vault. The padding is what makes the work exemption below
+/// necessary: a work call that starts inside the padding is still a work call.
 public struct PrivacyRules: Codable, Equatable {
     public var windows: [PrivateWindow]
     public var apps: [String]
+    /// Толк is work by definition: therapy is never held there and every work meeting is. A
+    /// bundle-ID prefix from this list therefore beats both triggers above.
+    public var workApps: [String]
+    /// The same exemption for a call in a browser tab, where the app is merely «Chrome» — the
+    /// host of the open call tab is the only thing that can tell the two apart. Matched by
+    /// `BrowserTabs.isWorkMeeting`, which hands the answer in as `workContext`.
+    public var workHosts: [String]
 
-    public init(windows: [PrivateWindow], apps: [String]) {
+    public init(windows: [PrivateWindow], apps: [String],
+                workApps: [String] = PrivacyRules.defaultWorkApps,
+                workHosts: [String] = PrivacyRules.defaultWorkHosts) {
         self.windows = windows
         self.apps = apps
+        self.workApps = workApps
+        self.workHosts = workHosts
     }
+
+    public static let defaultWorkApps = ["kontur.talk"]
+    public static let defaultWorkHosts = ["talk.magnit.ru", "ktalk.ru", "talk.kontur.ru"]
 
     public static let defaults = PrivacyRules(
         windows: [PrivateWindow(weekday: 2, from: "16:00", to: "16:50"),
                   PrivateWindow(weekday: 5, from: "20:00", to: "20:50")],
         apps: ["us.zoom"])
 
-    public func isPrivate(app: String, at date: Date, calendar: Calendar = .current) -> Bool {
-        if apps.contains(where: { !$0.isEmpty && app.hasPrefix($0) }) { return true }
+    /// The two work keys were added after the file was already on disk, so a config without them
+    /// is not broken — it simply has no opinion, and the defaults keep Толк out of the private
+    /// folder. `windows` and `apps` stay required: a file that lost those is malformed, and
+    /// `load` falls back to the defaults, which is the safe direction.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        windows = try c.decode([PrivateWindow].self, forKey: .windows)
+        apps = try c.decode([String].self, forKey: .apps)
+        workApps = try c.decodeIfPresent([String].self, forKey: .workApps) ?? PrivacyRules.defaultWorkApps
+        workHosts = try c.decodeIfPresent([String].self, forKey: .workHosts) ?? PrivacyRules.defaultWorkHosts
+    }
+
+    /// `workContext` is the caller's answer to «this is a work call» — for a browser, a call tab
+    /// on one of `workHosts`. Толк never carries therapy, so it outranks everything else here.
+    public func isPrivate(app: String, at date: Date, workContext: Bool = false,
+                          calendar: Calendar = .current) -> Bool {
+        if workContext || isWorkApp(app) { return false }
+        return isPrivateApp(app) || isInPrivateWindow(at: date, calendar: calendar)
+    }
+
+    public func isWorkApp(_ app: String) -> Bool {
+        workApps.contains { !$0.isEmpty && app.hasPrefix($0) }
+    }
+
+    public func isPrivateApp(_ app: String) -> Bool {
+        apps.contains { !$0.isEmpty && app.hasPrefix($0) }
+    }
+
+    /// The schedule half of `isPrivate`, on its own: a caller that is about to pay for an
+    /// AppleScript round trip needs to know whether the answer could even matter.
+    public func isInPrivateWindow(at date: Date, calendar: Calendar = .current) -> Bool {
         let parts = calendar.dateComponents([.weekday, .hour, .minute], from: date)
         guard let weekday = parts.weekday, let hour = parts.hour, let minute = parts.minute else { return false }
         let now = hour * 60 + minute
@@ -94,7 +138,9 @@ public struct PrivacyRules: Codable, Equatable {
         let payload: [String: Any] = [
             "_comment": "privacy.windows: weekday 1=вс … 7=сб, время локальное HH:mm, обе границы включительно. "
                 + "privacy.apps — префиксы bundle id. Запись, попавшая в окно или в это приложение, уходит в "
-                + "«Приватные записи», а не в рабочий вольт.",
+                + "«Приватные записи», а не в рабочий вольт. Толк никогда не приватный: privacy.workApps "
+                + "(префиксы bundle id) и privacy.workHosts (хосты звонков в браузере) перебивают и окно, "
+                + "и privacy.apps.",
             "privacy": privacy,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload,

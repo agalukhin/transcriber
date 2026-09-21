@@ -26,7 +26,6 @@ final class SessionController {
     /// One-shot override from the menu — forces the next session private whatever the schedule
     /// says, then clears itself.
     var forcePrivateNext = false
-    private var rules = PrivacyRules.load()
 
     private let store: SessionStore
     private let power = PowerHold()
@@ -69,17 +68,36 @@ final class SessionController {
     }
 
     /// Would a session started now for `app` be private? Re-reads the rules, so the prompt the
-    /// user sees and the session that follows always agree.
-    func wouldBePrivate(app: String, now: Date = Date()) -> Bool {
-        rules = PrivacyRules.load()
-        return forcePrivateNext || rules.isPrivate(app: app, at: now)
+    /// user sees and the session that follows always agree. `workContext` is the caller's answer
+    /// to «this is a work call» — see `workContext(app:now:)`; the menu override still wins over
+    /// everything.
+    func wouldBePrivate(app: String, now: Date = Date(), workContext: Bool = false) -> Bool {
+        forcePrivateNext || PrivacyRules.load().isPrivate(app: app, at: now, workContext: workContext)
+    }
+
+    /// Is a browser holding a work call right now? Inside a browser the bundle ID says nothing —
+    /// only the open tab can tell a Толк meeting from a therapy hour. Reading the tabs costs an
+    /// AppleScript round trip, so the question is asked only when the schedule alone is what
+    /// would make the session private: an app match (Zoom) is not something a tab can undo, and
+    /// outside the windows there is nothing to overturn.
+    ///
+    /// Touches no session state, so the poll queue can call it — and should: AppleScript has no
+    /// business on the main thread.
+    static func workContext(app: String, now: Date = Date()) -> Bool {
+        let rules = PrivacyRules.load()
+        guard AppDelegate.browserApps.contains(app),
+              !rules.isWorkApp(app), !rules.isPrivateApp(app),
+              rules.isInPrivateWindow(at: now) else { return false }
+        return BrowserTabs.hasWorkMeeting(forBrowser: app, hosts: rules.workHosts)
     }
 
     /// `info` is for callers that already know the meeting (a browser tab, say); without it the
-    /// only source is the Толк desktop window.
-    func start(app: String, info providedInfo: MeetingInfo? = nil, now: Date = Date()) {
+    /// only source is the Толк desktop window. `workContext` is the verdict from the detection
+    /// that led here, passed along so the prompt and the session it starts cannot disagree.
+    func start(app: String, info providedInfo: MeetingInfo? = nil, workContext: Bool = false,
+               now: Date = Date()) {
         guard case .idle = state else { return }
-        let isPrivate = wouldBePrivate(app: app, now: now)
+        let isPrivate = wouldBePrivate(app: app, now: now, workContext: workContext)
         // A private session carries no title: the name of a therapy call has no business in a
         // file name, a log line or the menu — and the worker names the file by time alone.
         let info = isPrivate ? MeetingInfo()

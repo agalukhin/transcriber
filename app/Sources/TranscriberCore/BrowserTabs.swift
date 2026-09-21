@@ -32,6 +32,30 @@ public enum BrowserTabs {
         tabs.first(where: isMeeting)
     }
 
+    /// A call on one of `hosts` is a work call: Владислав's therapy is never held in Толк and all
+    /// his work meetings are, so such a tab outranks the private schedule. Same host matching as
+    /// `isMeeting` — exact or a subdomain — and a lobby page is still not a call.
+    public static func isWorkMeeting(_ tab: BrowserTab, hosts: [String]) -> Bool {
+        guard isMeeting(tab), let host = URLComponents(string: tab.url)?.host?.lowercased() else { return false }
+        return hosts.contains { candidate in
+            let want = candidate.lowercased()
+            return !want.isEmpty && (host == want || host.hasSuffix("." + want))
+        }
+    }
+
+    /// Does `bundleID` have a work call open? A browser that says nothing — Automation denied, a
+    /// browser that is not running — answers `false`: an unanswered question must never turn a
+    /// therapy hour into a work note.
+    public static func hasWorkMeeting(forBrowser bundleID: String, hosts: [String]) -> Bool {
+        hasWorkMeeting(in: tabs(ofBrowser: bundleID), hosts: hosts)
+    }
+
+    /// Pure half of `hasWorkMeeting(forBrowser:hosts:)`, split out for the same reason as
+    /// `meetingTabState(in:)`: it can be tested on synthetic tabs.
+    static func hasWorkMeeting(in tabs: [BrowserTab], hosts: [String]) -> Bool {
+        tabs.contains { isWorkMeeting($0, hosts: hosts) }
+    }
+
     /// Browser tab titles carry the service name («Синк — Толк», «Meet – Standup»); the note only
     /// wants the meeting itself. A title that is nothing but the service name carries no meeting.
     public static func cleanTitle(_ title: String) -> String {

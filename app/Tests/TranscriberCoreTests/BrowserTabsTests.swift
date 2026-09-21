@@ -30,6 +30,34 @@ private func tab(_ url: String, _ title: String = "") -> BrowserTab {
     #expect(BrowserTabs.pickMeeting([]) == nil)
 }
 
+private let workHosts = ["talk.magnit.ru", "ktalk.ru", "talk.kontur.ru"]
+
+@Test func workMeetingIsACallOnAWorkHost() {
+    #expect(BrowserTabs.isWorkMeeting(tab("https://talk.magnit.ru/room1"), hosts: workHosts))
+    #expect(BrowserTabs.isWorkMeeting(tab("https://ktalk.ru/j/abc"), hosts: workHosts))
+    #expect(BrowserTabs.isWorkMeeting(tab("https://my.ktalk.ru/room1"), hosts: workHosts))   // поддомен
+    // Лобби — хост тот, но звонка ещё нет.
+    #expect(!BrowserTabs.isWorkMeeting(tab("https://talk.magnit.ru/"), hosts: workHosts))
+    // Звонок, но не в Толке: такой не отменяет приватного окна.
+    #expect(!BrowserTabs.isWorkMeeting(tab("https://us02web.zoom.us/j/123"), hosts: workHosts))
+    #expect(!BrowserTabs.isWorkMeeting(tab("https://meet.google.com/abc-defg-hij"), hosts: workHosts))
+    // Соседний хост не должен цепляться подстрокой.
+    #expect(!BrowserTabs.isWorkMeeting(tab("https://notktalk.ru/room1"), hosts: workHosts))
+    #expect(!BrowserTabs.isWorkMeeting(tab("не ссылка"), hosts: workHosts))
+    #expect(!BrowserTabs.isWorkMeeting(tab("https://talk.magnit.ru/room1"), hosts: []))
+}
+
+@Test func hasWorkMeetingLooksAtEveryTab() {
+    let tabs = [tab("https://mail.google.com/x", "Почта"),
+                tab("https://talk.magnit.ru/", "Толк"),
+                tab("https://talk.magnit.ru/room1", "Синк — Толк")]
+    #expect(BrowserTabs.hasWorkMeeting(in: tabs, hosts: workHosts))
+    #expect(!BrowserTabs.hasWorkMeeting(in: Array(tabs.prefix(2)), hosts: workHosts))
+    #expect(!BrowserTabs.hasWorkMeeting(in: [], hosts: workHosts))
+    // Браузер, который ничего не ответил, — не повод считать звонок рабочим.
+    #expect(!BrowserTabs.hasWorkMeeting(forBrowser: "com.example.nope", hosts: workHosts))
+}
+
 @Test func cleanTitleStripsServiceNamesOnly() {
     #expect(BrowserTabs.cleanTitle("ОКРs Q3: общий синхрон — Толк") == "ОКРs Q3: общий синхрон")
     #expect(BrowserTabs.cleanTitle("Standup - Google Meet") == "Standup")
