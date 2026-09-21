@@ -21,7 +21,15 @@
 * ``transcriber forget "Ярослав Серов"`` — снести профиль целиком;
   ``transcriber forget "Ярослав Серов" --source 2026-09-15-1622:Speaker 2`` — снять только
   отпечатки одной метки одной сессии, когда ``learn`` отдал кластер не тому человеку.
-  Отпечатки профилей старого формата (без источника) снимаются только вместе с профилем.
+  Отпечатки профилей старого формата (без источника) снимаются только вместе с профилем;
+* ``transcriber bench 2026-09-21-1030 --label current-main [--set block_min_s=30 …] [--note "…"]``
+  — стенд качества: прогнать эталонную запись из ``bench/<id>/`` текущим кодом (тот же путь, что
+  у ``retranscribe``) во временной сессии и временном вольте и положить транскрипт, метрики,
+  конфиг, коммит и лог в ``bench/<id>/runs/NN-<label>/``. Рабочий вольт, рабочие сессии и
+  библиотека голосов не трогаются. После прогона печатается таблица по всем прогонам записи;
+* ``transcriber bench-diff 2026-09-21-1030 01-prompt-and-filters 02-current-main`` — пословное
+  сравнение двух прогонов: доля совпавшего в обе стороны и самые длинные куски, которые есть
+  только в одном из них, с ближайшим маркером времени. Прогон можно назвать номером («01»).
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from . import bench as bench_mod
 from .config import Config, load_config
 from .daemon import Daemon
 from .echo import is_echo
@@ -306,6 +315,16 @@ def main(argv: list[str] | None = None) -> None:
     fg.add_argument("name", metavar="NAME")
     fg.add_argument("--source", metavar="SESSION:LABEL",
                     help="снять только отпечатки этой метки этой сессии, а не весь профиль")
+    bn = sub.add_parser("bench", help="run the bench audio through the current code and score it")
+    bn.add_argument("bench_id")
+    bn.add_argument("--label", required=True, help="метка прогона: current-main, no-prompt, …")
+    bn.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",
+                    help="переопределить поле конфига на этот прогон; можно несколько раз")
+    bn.add_argument("--note", help="чем этот прогон отличается — ляжет в note.txt")
+    bd = sub.add_parser("bench-diff", help="compare the transcripts of two bench runs word by word")
+    bd.add_argument("bench_id")
+    bd.add_argument("run_a", metavar="RUN_A")
+    bd.add_argument("run_b", metavar="RUN_B")
     args = ap.parse_args(argv)
     cfg = load_config()
     if args.cmd == "run":
@@ -348,6 +367,21 @@ def main(argv: list[str] | None = None) -> None:
         except LookupError as e:
             print(e, file=sys.stderr)
             raise SystemExit(1) from None
+    elif args.cmd == "bench":
+        try:
+            overrides = bench_mod.parse_overrides(args.overrides, cfg)
+            run = bench_mod.run_bench(cfg, args.bench_id, args.label, overrides, args.note)
+        except (ValueError, OSError) as e:
+            print(e, file=sys.stderr)
+            raise SystemExit(2) from None
+        print(run)
+        print(bench_mod.format_table(bench_mod.collect_rows(run.parent)))
+    elif args.cmd == "bench-diff":
+        try:
+            print(bench_mod.diff_runs(cfg, args.bench_id, args.run_a, args.run_b))
+        except (ValueError, OSError) as e:
+            print(e, file=sys.stderr)
+            raise SystemExit(2) from None
 
 
 if __name__ == "__main__":
