@@ -509,3 +509,38 @@ def test_forget_source_counts_samples_whose_source_is_unknown(vault, tmp_path, c
     out = capsys.readouterr().out
     assert "снято 2" in out and "осталось 3" in out
     assert "3" in out and "источник неизвестен" in out
+
+
+def test_daemon_skips_a_session_locked_by_another_process(vault, tmp_path):
+    import os, subprocess, sys
+    sessions = tmp_path / "sessions"
+    d = make_session(sessions)
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(6.0)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(5.0)])))
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (d / "LOCK").write_text(str(other.pid))
+        dm = daemon.Daemon(Config(vault_root=vault, sessions_dir=sessions), models=fake_models())
+        assert dm.once() is False
+        assert not (d / "state.json").exists()
+    finally:
+        other.kill(); other.wait()
+    assert dm.once() is True                     # замок мёртвого процесса не считается
+
+
+def test_session_lock_refuses_when_held_and_cleans_up(tmp_path):
+    import subprocess, sys
+    import pytest
+    from transcriber.session import SessionLocked, session_lock
+    d = make_session(tmp_path / "sessions")
+    with session_lock(d):
+        assert (d / "LOCK").exists()
+    assert not (d / "LOCK").exists()
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (d / "LOCK").write_text(str(other.pid))
+        with pytest.raises(SessionLocked):
+            with session_lock(d):
+                pass
+    finally:
+        other.kill(); other.wait()

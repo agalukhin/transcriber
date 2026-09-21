@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import Config
 from .models import Models, load_models
 from .pipeline import Pipeline
-from .session import Session
+from .session import Session, lock_holder
 from .vault import ensure_stub, write_raw
 
 log = logging.getLogger("transcriber")
@@ -42,6 +42,9 @@ class Daemon:
         self._forget_vanished()
         for d in sorted(p for p in self.cfg.sessions_dir.iterdir() if (p / "meta.json").exists()):
             if self._sleeping(d):
+                continue
+            if lock_holder(d) is not None:       # сессию взял CLI (retranscribe и т.п.) — не мешаем
+                self.pipes.pop(d, None)
                 continue
             try:
                 pipe = self.pipes.get(d)

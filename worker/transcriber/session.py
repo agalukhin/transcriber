@@ -104,3 +104,45 @@ def atomic_write_text(path: Path, text: str) -> None:
         f.flush()
         os.fsync(f.fileno())                                 # without fsync a power loss leaves an empty file
     os.replace(tmp, path)
+
+
+class SessionLocked(RuntimeError):
+    pass
+
+
+def lock_holder(dir: Path) -> int | None:
+    """PID живого процесса, держащего сессию (кроме нас самих), иначе None. Мёртвый замок не считается."""
+    f = Path(dir) / "LOCK"
+    try:
+        pid = int(f.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return pid
+    return pid
+
+
+class session_lock:
+    """`with session_lock(dir):` — эксклюзивная работа над сессией из CLI (retranscribe, refinalize,
+    finalize). Демон такие сессии пропускает, иначе два процесса пишут в один state.json."""
+
+    def __init__(self, dir: Path):
+        self.file = Path(dir) / "LOCK"
+        self.dir = Path(dir)
+
+    def __enter__(self):
+        holder = lock_holder(self.dir)
+        if holder is not None:
+            raise SessionLocked(f"сессию {self.dir.name} сейчас обрабатывает процесс {holder}")
+        self.file.write_text(str(os.getpid()))
+        return self
+
+    def __exit__(self, *exc):
+        self.file.unlink(missing_ok=True)
+        return False

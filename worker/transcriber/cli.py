@@ -46,7 +46,7 @@ from .models import Models, load_models
 from .pipeline import Pipeline, recluster_records
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .speakers import label
-from .session import Session, State
+from .session import Session, SessionLocked, State, session_lock
 from .vault import write_raw
 from .voices import VoiceLibrary, VoiceProfile
 
@@ -111,6 +111,11 @@ def from_wav(cfg: Config, mic: Path, sys_: Path, title: str, app: str, models: M
 
 def refinalize(cfg: Config, session_id: str) -> Path:
     """Пересобрать результат сессии из сохранённого state.json — без аудио, без ASR."""
+    with session_lock(cfg.sessions_dir / session_id):
+        return _refinalize(cfg, session_id)
+
+
+def _refinalize(cfg: Config, session_id: str) -> Path:
     session = Session.load(cfg.sessions_dir / session_id)
     st = session.state
     vocabulary = prompt_vocabulary(session.meta.participants, cfg.glossary)
@@ -139,6 +144,11 @@ def refinalize(cfg: Config, session_id: str) -> Path:
 def retranscribe(cfg: Config, session_id: str, models: Models | None = None) -> Path:
     """Прогнать сессию заново по сохранённому аудио — с текущим промптом, моделью и порогами."""
     d = cfg.sessions_dir / session_id
+    with session_lock(d):
+        return _retranscribe(cfg, d, session_id, models)
+
+
+def _retranscribe(cfg: Config, d: Path, session_id: str, models: Models | None) -> Path:
     session = Session.load(d)
     if not (session.mic_pcm.exists() or session.sys_pcm.exists()):
         raise ValueError(f"{session_id}: аудио сессии не сохранено — помогает только refinalize")
@@ -303,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "from-wav":
         try:
             print(from_wav(cfg, Path(args.mic), Path(args.sys), args.title, args.app))
-        except ValueError as e:
+        except (ValueError, SessionLocked) as e:
             print(e, file=sys.stderr)
             raise SystemExit(2) from None
     elif args.cmd == "finalize":
