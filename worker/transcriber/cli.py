@@ -11,6 +11,12 @@
   ``mic.pcm``/``sys.pcm``: state сбрасывается (Raw и MTG остаются на своих путях) и вся
   дорожка проходит ASR заново с текущим конфигом. Нужна при ``keep_audio: true``, когда
   поменялись промпт, модель или пороги сегментации;
+* ``transcriber make-private SESSION_ID`` — перевести уже записанную сессию в приватные:
+  в ``meta.json`` проставляется ``private: true``, транскрипт переезжает из вольта в
+  ``private_dir/<id>/transcript.md`` (перерисовывается без фронт-маттера вольта), MTG-заглушка
+  из вольта сносится, если в неё ещё не писали, а заметка с мыслями уезжает туда же
+  ``notes.md``. Каталог и файлы — только для владельца (0700/0600). Нужна, когда приложение
+  не пометило приватную встречу при старте и она уже записалась в рабочий вольт;
 * ``transcriber learn SESSION_ID "Speaker 2=Ярослав Серов" …`` — положить отпечатки голоса
   кластера в библиотеку под именем человека. Метка берётся из финального Raw: ``Speaker N``
   или уже проставленное имя. Вместо пар можно указать ``--from-note ПУТЬ`` — ключ
@@ -55,8 +61,8 @@ from .models import Models, load_models
 from .pipeline import Pipeline, recluster_records
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .speakers import label
-from .session import Session, SessionLocked, State, session_lock
-from .vault import write_raw
+from .session import Session, SessionLocked, State, atomic_write_text, session_lock
+from .vault import ensure_stub, is_untouched_stub, note_path, write_raw, write_text
 from .voices import VoiceLibrary, VoiceProfile
 
 log = logging.getLogger("transcriber")
@@ -147,7 +153,7 @@ def _refinalize(cfg: Config, session_id: str) -> Path:
             continue
         kept.append(r)
     st.records = kept
-    recluster_records(cfg, st)
+    recluster_records(cfg, st, private=session.meta.private)
     p = write_raw(cfg, session, f"финализирован повторно {datetime.now().strftime('%H:%M')}")
     session.save_state()
     return p
@@ -176,6 +182,51 @@ def _retranscribe(cfg: Config, d: Path, session_id: str, models: Models | None) 
         pass
     pipe.finalize()
     return Path(pipe.s.state.raw_path)
+
+
+def make_private(cfg: Config, session_id: str) -> Path:
+    """Перевести уже записанную сессию в приватные: файлы — из вольта в ``private_dir``."""
+    with session_lock(cfg.sessions_dir / session_id):
+        return _make_private(cfg, session_id)
+
+
+def _make_private(cfg: Config, session_id: str) -> Path:
+    d = cfg.sessions_dir / session_id
+    session = Session.load(d)
+    if session.meta.private:
+        raise ValueError(f"{session_id}: сессия уже приватная")
+    old_raw = Path(session.state.raw_path) if session.state.raw_path else None
+    old_note = Path(session.state.note_path) if session.state.note_path else None
+    meta_file = d / "meta.json"
+    data = json.loads(meta_file.read_text())
+    data["private"] = True
+    atomic_write_text(meta_file, json.dumps(data, ensure_ascii=False))
+    session.meta.private = True
+    session.state.raw_path = None            # путь фиксируется заново, уже в приватном каталоге
+    session.state.note_path = None
+    _carry_note(cfg, session, old_note)
+    session.save_state()
+    p = _refinalize(cfg, session_id)         # транскрипт перерисовывается без фронт-маттера вольта
+    if old_raw is not None and old_raw.exists() and old_raw != p:
+        old_raw.unlink()
+    log.info("%s: приватная запись, файлы в %s", session_id, p.parent)
+    return p
+
+
+def _carry_note(cfg: Config, session: Session, old_note: Path | None) -> None:
+    """Заглушку из вольта сносим, заметку с мыслями уносим целиком в приватный каталог.
+
+    Сносим только нетронутую заглушку: чужой текст удалять нельзя, даже свой.
+    """
+    if old_note is not None and old_note.exists() and not is_untouched_stub(old_note.read_text(encoding="utf-8")):
+        dest = note_path(cfg, session.meta)
+        write_text(cfg, session.meta, dest, old_note.read_text(encoding="utf-8"))
+        old_note.unlink()
+        session.state.note_path = str(dest)
+        return
+    if old_note is not None:
+        old_note.unlink(missing_ok=True)
+    ensure_stub(cfg, session)
 
 
 SPEAKER_LABEL = re.compile(r"Speaker\s+(\d+)$")
@@ -227,7 +278,10 @@ def learn(cfg: Config, session_id: str, mapping: dict[str, str]) -> list[tuple[s
     """
     if not mapping:
         raise ValueError("нечего учить: не задана ни одна пара «Speaker N=Имя»")
-    st = Session.load(cfg.sessions_dir / session_id).state
+    session = Session.load(cfg.sessions_dir / session_id)
+    if session.meta.private:
+        raise ValueError(f"{session_id}: сессия приватная — голоса из неё в библиотеку не берём")
+    st = session.state
     known = sorted({label(c) for c in st.speaker_of_emb} | set(st.speaker_names.values()))
     plan: list[tuple[str, str, list[list[float]]]] = []
     for text, name in mapping.items():
@@ -309,6 +363,8 @@ def main(argv: list[str] | None = None) -> None:
     rf.add_argument("session_id")
     rt = sub.add_parser("retranscribe", help="run the whole pipeline again over the session's saved audio")
     rt.add_argument("session_id")
+    mp = sub.add_parser("make-private", help="move an already recorded session out of the vault")
+    mp.add_argument("session_id")
     ln = sub.add_parser("learn", help='teach a voice: learn SESSION_ID "Speaker 2=Ярослав Серов" …')
     ln.add_argument("session_id")
     ln.add_argument("pairs", nargs="*", metavar="SPEAKER=NAME")
@@ -351,6 +407,12 @@ def main(argv: list[str] | None = None) -> None:
         try:
             print(retranscribe(cfg, args.session_id))
         except ValueError as e:
+            print(e, file=sys.stderr)
+            raise SystemExit(2) from None
+    elif args.cmd == "make-private":
+        try:
+            print(make_private(cfg, args.session_id))
+        except (ValueError, OSError, SessionLocked) as e:
             print(e, file=sys.stderr)
             raise SystemExit(2) from None
     elif args.cmd == "learn":

@@ -544,3 +544,115 @@ def test_session_lock_refuses_when_held_and_cleans_up(tmp_path):
                 pass
     finally:
         other.kill(); other.wait()
+
+
+# ---- приватные записи: make-private ------------------------------------------
+
+
+def test_daemon_puts_an_early_private_session_outside_the_vault(vault, tmp_path, private_dir, monkeypatch, caplog):
+    """Заметка и транскрипт создаются до загрузки моделей — и у приватной сессии тоже мимо вольта."""
+    from tests.conftest import vault_files
+
+    sessions = tmp_path / "sessions"
+    d = make_session(sessions, private=True)
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
+    cfg = Config(vault_root=vault, sessions_dir=sessions, private_dir=private_dir)
+    monkeypatch.setattr(daemon, "load_models", lambda _cfg: (_ for _ in ()).throw(RuntimeError("no models")))
+    with caplog.at_level("ERROR", logger="transcriber"):
+        daemon.Daemon(cfg).once()
+    state = json.loads((d / "state.json").read_text())
+    assert Path(state["raw_path"]) == private_dir / "2026-09-15-1430/transcript.md"
+    assert Path(state["note_path"]) == private_dir / "2026-09-15-1430/notes.md"
+    assert Path(state["raw_path"]).exists() and Path(state["note_path"]).exists()
+    assert vault_files(vault) == []
+
+
+def test_learn_refuses_a_private_session(vault, tmp_path, private_dir):
+    import pytest
+
+    sessions = tmp_path / "sessions"
+    make_session(sessions, private=True)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, private_dir=private_dir)
+    with pytest.raises(ValueError, match="приватн"):
+        cli.learn(cfg, "2026-09-15-1430", {"Speaker 1": "Ярослав Серов"})
+    assert not VoiceLibrary(cfg.voices_dir).names()
+
+
+def _recorded(vault, tmp_path, private_dir) -> tuple[Config, Path]:
+    """Обычная записанная сессия: Raw и MTG-заглушка уже лежат в вольте."""
+    from transcriber import vault as vault_mod
+
+    sessions = tmp_path / "sessions"
+    d = _synthetic_session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, private_dir=private_dir, glossary=["Магнит"])
+    session = cli.Session.load(d)
+    vault_mod.ensure_stub(cfg, session)
+    session.save_state()
+    cli.refinalize(cfg, "2026-09-15-1430")
+    return cfg, d
+
+
+def _paths(d: Path) -> tuple[Path, Path]:
+    state = json.loads((d / "state.json").read_text())
+    return Path(state["raw_path"]), Path(state["note_path"])
+
+
+def test_make_private_moves_the_raw_and_drops_an_untouched_stub(vault, tmp_path, private_dir):
+    from tests.conftest import vault_files
+
+    cfg, d = _recorded(vault, tmp_path, private_dir)
+    old_raw, old_note = _paths(d)
+    assert old_raw.exists() and old_note.exists()
+
+    p = cli.make_private(cfg, "2026-09-15-1430")
+
+    assert p == private_dir / "2026-09-15-1430/transcript.md"
+    assert not old_raw.exists() and not old_note.exists()
+    assert vault_files(vault) == []
+    text = p.read_text()
+    assert not text.startswith("---") and "Приватная запись. Вне рабочего вольта." in text
+    assert "Я думаю, надо начать с октября" in text          # тело транскрипта сохранено
+    assert json.loads((d / "meta.json").read_text())["private"] is True
+    raw, note = _paths(d)
+    assert raw == p and note == private_dir / "2026-09-15-1430/notes.md"
+    assert note.read_text() == "# Заметки — 2026-09-15 14:30\n\n"
+    assert (p.stat().st_mode & 0o777) == 0o600 and (note.stat().st_mode & 0o777) == 0o600
+
+
+def test_make_private_carries_a_note_with_thoughts_out_of_the_vault(vault, tmp_path, private_dir):
+    from tests.conftest import vault_files
+
+    cfg, d = _recorded(vault, tmp_path, private_dir)
+    _old_raw, old_note = _paths(d)
+    old_note.write_text(old_note.read_text() + "\nтут мои мысли\n")
+
+    cli.make_private(cfg, "2026-09-15-1430")
+
+    note = private_dir / "2026-09-15-1430/notes.md"
+    assert "тут мои мысли" in note.read_text()
+    assert not old_note.exists() and vault_files(vault) == []
+    assert (note.stat().st_mode & 0o777) == 0o600
+    assert _paths(d)[1] == note
+
+
+def test_make_private_refuses_a_session_that_is_already_private(vault, tmp_path, private_dir):
+    import pytest
+
+    cfg, _d = _recorded(vault, tmp_path, private_dir)
+    cli.make_private(cfg, "2026-09-15-1430")
+    with pytest.raises(ValueError, match="уже приватная"):
+        cli.make_private(cfg, "2026-09-15-1430")
+
+
+def test_make_private_command_prints_the_new_path(vault, tmp_path, private_dir, capsys, monkeypatch):
+    import pytest
+
+    cfg, _d = _recorded(vault, tmp_path, private_dir)
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: cfg)
+    cli.main(["make-private", "2026-09-15-1430"])
+    assert capsys.readouterr().out.strip() == str(private_dir / "2026-09-15-1430/transcript.md")
+
+    with pytest.raises(SystemExit) as e:
+        cli.main(["make-private", "2026-09-15-1430"])
+    assert e.value.code == 2 and "приватная" in capsys.readouterr().err
