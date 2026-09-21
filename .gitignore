@@ -1,4 +1,5 @@
 .env
+app-config.json
 sessions/
 .build/
 .venv/

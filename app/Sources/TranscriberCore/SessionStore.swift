@@ -35,7 +35,12 @@ public final class SessionStore {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Claude/transcriber/sessions")
     }
 
-    public func create(app: String, title: String, participants: [String], now: Date = Date()) throws -> SessionDir {
+    /// `private` marks the session as off-limits for the work vault: the worker then writes the
+    /// transcript and the notes into `~/Documents/Приватные записи/` and touches nothing else.
+    /// The key is absent unless it is true — an old worker reading a normal session sees the meta
+    /// it has always seen.
+    public func create(app: String, title: String, participants: [String], now: Date = Date(),
+                       private isPrivate: Bool = false) throws -> SessionDir {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let base = Self.idFormatter.string(from: now)
         var id = base
@@ -46,13 +51,14 @@ public final class SessionStore {
         }
         let dir = SessionDir(url: root.appendingPathComponent(id, isDirectory: false))
         try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
-        let meta: [String: Any] = [
+        var meta: [String: Any] = [
             "id": id,
             "started_at": Self.isoFormatter.string(from: now),
             "app": app,
             "title": title,
             "participants": participants,
         ]
+        if isPrivate { meta["private"] = true }
         let data = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .withoutEscapingSlashes])
         try data.write(to: dir.metaURL, options: .atomic)
         return dir
