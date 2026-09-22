@@ -56,7 +56,7 @@ import yaml
 from . import bench as bench_mod
 from .config import Config, load_config
 from .daemon import Daemon
-from .echo import is_echo, is_residue
+from .echo import is_acoustic_residue, is_echo, is_residue
 from .models import Models, load_models
 from .pipeline import Pipeline, recluster_records
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
@@ -150,6 +150,10 @@ def _refinalize(cfg: Config, session_id: str) -> Path:
             continue
         if r.channel == "mic" and is_residue(r, sys_recs):
             log.info("echo residue dropped %.1f-%.1f: %s", r.start, r.end, r.text)
+            continue
+        if r.channel == "mic" and is_acoustic_residue(r, sys_recs, cfg.echo_kept_max,
+                                                      cfg.echo_kept_min_cover):
+            log.info("echo residue (acoustic) dropped %.1f-%.1f kept=%.2f: %s", r.start, r.end, r.kept, r.text)
             continue
         kept.append(r)
     st.records = kept

@@ -83,3 +83,24 @@ def test_private_flag_survives_a_non_boolean_value(tmp_path):
     meta["private"] = "true"          # Swift мог записать строкой — вольт всё равно бережём
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
     assert Session.load(d).meta.private is True
+
+
+def test_rec_kept_roundtrips_and_is_optional(tmp_path):
+    d = make_session(tmp_path)
+    s = Session.load(d)
+    s.state.records.append(Rec("mic", 0.0, 1.0, "а почему?", "Me", None, kept=0.19))
+    s.state.pending_mic.append(Rec("mic", 2.0, 3.0, "эхо", "Me", None, kept=0.07))
+    s.state.records.append(Rec("mic", 4.0, 5.0, "без доли", "Me", None))
+    s.save_state()
+    s2 = Session.load(d)
+    assert s2.state.records[0].kept == 0.19
+    assert s2.state.pending_mic[0].kept == 0.07
+    assert s2.state.records[1].kept is None
+
+
+def test_rec_without_kept_in_old_state_file(tmp_path):
+    d = make_session(tmp_path)
+    (d / "state.json").write_text(json.dumps({
+        "records": [{"channel": "mic", "start": 0.0, "end": 1.0, "text": "да", "speaker": "Me", "emb": None}],
+    }))
+    assert Session.load(d).state.records[0].kept is None

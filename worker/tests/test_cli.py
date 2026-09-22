@@ -265,6 +265,29 @@ def test_refinalize_cleans_texts_echo_and_speakers_without_audio(vault, tmp_path
     assert "prompt leak" in caplog.text and "filler" in caplog.text
 
 
+def test_refinalize_drops_acoustic_residue_by_kept(vault, tmp_path, caplog):
+    sessions = tmp_path / "sessions"
+    d = make_session(sessions, title="Встреча")
+    records = [
+        {"channel": "sys", "start": 0.0, "end": 10.0, "text": "Завтра встречаемся в половине второго",
+         "speaker": "Speaker 1", "emb": 0},
+        {"channel": "mic", "start": 2.0, "end": 5.0, "text": "мы с вами сегодня завтра встречаемся в 1-30",
+         "speaker": "Me", "emb": None, "kept": 0.08},
+        {"channel": "mic", "start": 6.0, "end": 7.0, "text": "А почему?", "speaker": "Me", "emb": None,
+         "kept": 0.19},
+        {"channel": "mic", "start": 12.0, "end": 13.0, "text": "Без доли", "speaker": "Me", "emb": None},
+    ]
+    (d / "state.json").write_text(json.dumps({"status": "finalized", "records": records,
+                                              "embeddings": [[1, 0, 0]], "speaker_of_emb": [0]},
+                                             ensure_ascii=False))
+    cfg = Config(vault_root=vault, sessions_dir=sessions)
+    with caplog.at_level("INFO", logger="transcriber"):
+        cli.refinalize(cfg, "2026-09-15-1430")
+    state = json.loads((d / "state.json").read_text())
+    assert [r["text"] for r in state["records"] if r["channel"] == "mic"] == ["А почему?", "Без доли"]
+    assert "echo residue (acoustic) dropped 2.0-5.0 kept=0.08" in caplog.text
+
+
 def test_refinalize_is_idempotent(vault, tmp_path):
     sessions = tmp_path / "sessions"
     d = _synthetic_session(sessions)

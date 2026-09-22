@@ -94,3 +94,28 @@ def test_residue_also_in_short_pauses_between_speaker_phrases():
     others = [sys_(100.0, 110.0, "Первая фраза."), sys_(113.0, 120.0, "Вторая фраза.")]
     assert is_residue(mic(111.0, 111.5, "Спасибо."), others)        # пауза 3 с между фразами
     assert not is_residue(mic(130.0, 130.5, "Спасибо."), others)    # 10 с тишины после — уже владелец
+
+
+def test_acoustic_residue_by_kept_energy_under_sys_speech():
+    from transcriber.echo import is_acoustic_residue
+    others = [sys_(100.0, 110.0, "Мы с вами завтра встречаемся в половине второго.")]
+
+    def m(kept, s=102.0, e=105.0):
+        r = mic(s, e, "мы с вами сегодня завтра встречаемся в 1-30")
+        r.kept = kept
+        return r
+
+    assert is_acoustic_residue(m(0.08), others, kept_max=0.15, min_cover=0.8)
+    # владелец поверх собеседника: подавитель съел часть, но далеко не всё
+    assert not is_acoustic_residue(m(0.19), others, kept_max=0.15, min_cover=0.8)
+    assert not is_acoustic_residue(m(0.15), others, kept_max=0.15, min_cover=0.8)
+    # мало перекрыто речью динамиков — решать по энергии нельзя
+    assert not is_acoustic_residue(m(0.05, 108.0, 112.0), others, kept_max=0.15, min_cover=0.8)
+    # доля не посчитана (подавление выключено, старая запись) — оставляем
+    assert not is_acoustic_residue(m(None), others, kept_max=0.15, min_cover=0.8)
+    # правило выключено нулевым порогом
+    assert not is_acoustic_residue(m(0.01), others, kept_max=0.0, min_cover=0.8)
+    # пустой текст — уже не реплика
+    r = m(0.05)
+    r.text = ""
+    assert not is_acoustic_residue(r, others, kept_max=0.15, min_cover=0.8)

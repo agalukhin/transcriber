@@ -58,3 +58,17 @@ def is_residue(m: Rec, others: list[Rec]) -> bool:
         return False
     return any(o.text and min(m.end, o.end + RESIDUE_MARGIN_S) - max(m.start, o.start - RESIDUE_MARGIN_S) > 0
                for o in others)
+
+
+def is_acoustic_residue(m: Rec, others: list[Rec], kept_max: float, min_cover: float) -> bool:
+    """Реплика микрофона, от которой подавитель эха почти ничего не оставил, поверх речи динамиков.
+
+    ``m.kept`` — доля энергии микрофона, пережившая подавление. У эха она 0.05–0.15, у владельца,
+    говорящего поверх собеседника, от 0.17, в тишине динамиков — около единицы. Текст тут не
+    помогает: на таком остатке whisper пишет бессмыслицу, непохожую на то, что сказал собеседник.
+    Без доли (подавление выключено, старая запись) или без перекрытия — не решаем. Перекрытие
+    считается по всем репликам динамиков, даже выброшенным фильтрами: звук там всё равно был.
+    """
+    if not m.text or m.kept is None or m.kept >= kept_max:
+        return False
+    return overlap_fraction(m, others) >= min_cover

@@ -139,14 +139,15 @@ def test_count_log_events_groups_lines_by_rule():
         "10:00:02 INFO dropped (filler) 5.0-6.0: ааа",
         "10:00:03 INFO dropped (foreign) 7.0-8.0: thank you for watching",
         "10:00:04 INFO echo dropped 9.0-10.0: мы отдадим SQL",
+        "10:00:04 INFO echo residue (acoustic) dropped 9.5-10.5 kept=0.07: в вашем сердце",
         "10:00:05 INFO retry without prompt 11.0-12.0: Термины",
         "10:00:06 WARNING asr failed at 13.0-14.0: RuntimeError('boom')",
         "10:00:07 INFO voices: Speaker 1 → Ярослав Серов (0.700, 12 реплик)",
     ]
     assert bench.count_log_events(lines) == {
         "prompt leak": 1, "repetitive": 1, "foreign": 1, "filler": 1,
-        "echo dropped": 1, "retry without prompt": 1, "asr failed": 1}
-    assert bench.drops(bench.count_log_events(lines)) == 5     # ретрай и падение ASR — не выброшенная речь
+        "echo dropped": 1, "echo residue (acoustic)": 1, "retry without prompt": 1, "asr failed": 1}
+    assert bench.drops(bench.count_log_events(lines)) == 6     # ретрай и падение ASR — не выброшенная речь
 
 
 def test_blanked_seconds_counts_only_guarded_records():

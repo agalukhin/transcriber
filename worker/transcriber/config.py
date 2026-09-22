@@ -49,6 +49,8 @@ class Config:
     echo_suppress: bool = False   # вычитать эхо динамиков из микрофона по дорожке sys (aec.py)
     echo_beta: float = 2.0        # во сколько раз смелее вычитаем: запас на недооценку тракта
     echo_floor: float = 0.05      # ниже этого коэффициента корзину не опускаем — останется дыра
+    echo_kept_max: float = 0.15   # реплика микрофона, от которой подавитель оставил меньше, — остаток эха; 0 — выкл.
+    echo_kept_min_cover: float = 0.8   # ...если она хотя бы настолько накрыта речью динамиков
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM"
     language: str = "ru"

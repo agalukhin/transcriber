@@ -129,11 +129,12 @@ LOG_RULES: dict[str, re.Pattern] = {
     "foreign": re.compile(r"dropped \(foreign\)"),
     "filler": re.compile(r"dropped \(filler\)"),
     "echo dropped": re.compile(r"echo dropped"),
+    "echo residue (acoustic)": re.compile(r"echo residue \(acoustic\) dropped"),
     "retry without prompt": re.compile(r"retry without prompt"),
     "asr failed": re.compile(r"asr failed"),
 }
 # выброшенная речь: ретрай без промпта и падение ASR речь не отнимают, в общий счёт не идут
-DROP_RULES = ("prompt leak", "repetitive", "foreign", "filler", "echo dropped")
+DROP_RULES = ("prompt leak", "repetitive", "foreign", "filler", "echo dropped", "echo residue (acoustic)")
 
 
 def count_log_events(lines: list[str]) -> dict[str, int]:

@@ -447,6 +447,78 @@ def test_mic_waits_for_the_sys_track_before_suppression(vault, tmp_path):
     assert [(r.channel, r.text) for r in s.state.records] == [("mic", "tone440")]
 
 
+GARBLED = "чтобы в вашем сердце это развернулись"
+
+
+class ResidueAsr(FakeAsr):
+    """Тихий всплеск — это остаток эха: whisper сочиняет на нём бессмыслицу, непохожую на sys."""
+
+    def __call__(self, audio, prompt=""):
+        out = super().__call__(audio, prompt)
+        return [Segment(s.start, s.end, GARBLED)
+                if float(np.abs(audio[int(s.start * SR):int(s.end * SR)]).max()) < 0.15 else s
+                for s in out]
+
+
+def _residue_session(d: Path):
+    """Эхо, которое подавитель снимает не целиком: динамик ноутбука на громкой речи хрипит.
+
+    Хрип — вторая гармоника, которой в дорожке ``sys`` нет, поэтому вычесть её нечем; прорывается
+    она урывками (60 мс из каждых 260). Кадры без хрипа подавитель глушит, с хрипом — пропускает:
+    остаток громче порога VAD и сливается в одну реплику, но это считанные проценты энергии
+    микрофона. Владелец говорит один раз — в тишине динамиков.
+    """
+    rng = np.random.default_rng(0)
+    warmup = (rng.standard_normal(int(5.0 * SR)) * 0.025).astype(np.float32)
+    for i in range(0, len(warmup), int(0.8 * SR)):
+        warmup[i + int(0.5 * SR):i + int(0.8 * SR)] = 0.0
+    speech = tone(3.0, 880)
+    sys_ = np.concatenate([warmup, speech, silence(6.0)])
+    echo = ECHO_GAIN * np.concatenate([silence(ECHO_DELAY / SR), sys_])[:len(sys_)]
+    rattle = np.zeros(len(sys_), dtype=np.float32)
+    harmonic = tone(3.0, 1760, amp=0.05)
+    at, on, every = len(warmup) + ECHO_DELAY, int(0.06 * SR), int(0.26 * SR)
+    for k in range(0, len(harmonic), every):
+        rattle[at + k:at + k + on] = harmonic[k:k + on]
+    owner = np.zeros(len(sys_), dtype=np.float32)
+    owner[int(10.0 * SR):int(11.5 * SR)] = tone(1.5, 440)
+    write(d, "mic.pcm", echo + rattle + owner)
+    write(d, "sys.pcm", sys_)
+
+
+def test_acoustic_residue_dropped_by_kept_energy(vault, tmp_path, caplog):
+    d = make_session(tmp_path / "sessions")
+    _residue_session(d)
+    cfg, s, p = build(vault, tmp_path / "sessions", asr=ResidueAsr(), echo_suppress=True,
+                      keep_audio=True, **FAST)
+    with caplog.at_level("INFO", logger="transcriber"):
+        p.finalize()
+    mic = [r for r in s.state.records if r.channel == "mic"]
+    assert [(r.speaker, r.text) for r in mic] == [("Me", "tone440")]
+    assert mic[0].kept is not None and mic[0].kept > 0.9           # владелец в тишине — нетронут
+    assert "echo residue (acoustic) dropped" in caplog.text
+    assert GARBLED in caplog.text and "echo dropped" not in caplog.text   # текстовому фильтру не поймать
+
+
+def test_acoustic_residue_rule_off_keeps_the_residue_with_its_kept(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    _residue_session(d)
+    cfg, s, p = build(vault, tmp_path / "sessions", asr=ResidueAsr(), echo_suppress=True,
+                      keep_audio=True, echo_kept_max=0.0, **FAST)
+    p.finalize()
+    mic = sorted((r for r in s.state.records if r.channel == "mic"), key=lambda r: r.start)
+    assert [r.text for r in mic] == [GARBLED, "tone440"]
+    assert mic[0].kept is not None and mic[0].kept < 0.15
+
+
+def test_kept_not_computed_without_suppression(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    write(d, "mic.pcm", np.concatenate([silence(0.5), tone(1.0, 440), silence(5.0)]))
+    cfg, s, p = build(vault, tmp_path / "sessions")
+    p.step()
+    assert [r.kept for r in s.state.records] == [None]
+
+
 # ---- голосовые профили -------------------------------------------------------
 
 

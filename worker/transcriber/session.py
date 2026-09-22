@@ -35,6 +35,7 @@ class Rec:
     text: str | None
     speaker: str          # "Me" | "Speaker N"
     emb: int | None = None  # index into State.embeddings
+    kept: float | None = None  # доля энергии микрофона, оставленная подавителем эха; None — не считали
 
     @classmethod
     def from_dict(cls, d: dict) -> "Rec":

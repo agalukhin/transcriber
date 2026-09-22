@@ -10,7 +10,7 @@ from .aec import EchoSuppressor
 from .asr import Segment, build_prompt
 from .blocks import Block, BlockBuilder
 from .config import Config
-from .echo import is_echo, is_residue
+from .echo import is_acoustic_residue, is_echo, is_residue
 from .pcm import PcmReader, read_range
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .session import Rec, Session, State
@@ -23,6 +23,8 @@ log = logging.getLogger("transcriber")
 
 PROMPT_LEAK = "prompt leak"     # имя правила из quality.junk_reason, которое лечится повтором
 CARRY_MAX = 200                 # столько символов прошлого блока канала уносим в следующий промпт
+KEPT_MIN_ENERGY = 1e-8          # тише — сырой микрофон почти молчит, доля энергии ничего не значит
+KEPT_MIN_S = 0.1                # короче — доля по паре кадров STFT, ей верить нельзя
 
 
 def name_clusters(cfg: Config, st: State, library: VoiceLibrary | None = None) -> dict[int, str]:
@@ -263,7 +265,10 @@ class Pipeline:
                 text = ""
             else:
                 kept.append(text)
-            self._place(ch, Rec(channel=ch, start=start, end=end, text=text, speaker="Me", emb=None), block, seg)
+            rec = Rec(channel=ch, start=start, end=end, text=text, speaker="Me", emb=None)
+            if ch == "mic" and self.aec is not None:
+                rec.kept = self._kept(block, seg, start, end)
+            self._place(ch, rec, block, seg)
         if self.cfg.carry_context:
             self.carry[ch] = " ".join(kept)[-CARRY_MAX:]
 
@@ -285,6 +290,25 @@ class Pipeline:
         else:
             rec.speaker = self.last_sys_speaker
         st.records.append(rec)
+
+    def _kept(self, block: Block, seg: Segment, start: float, end: float) -> float | None:
+        """Доля энергии микрофона, которую подавитель эха оставил на отрезке реплики.
+
+        Очищенный звук — из склейки блока (координаты блока), сырой — с диска по исходному
+        отрезку. Выход подавителя совпадает со входом по номерам сэмплов, так что сравнивать
+        можно напрямую. Слишком короткая или почти беззвучная реплика доли не получает.
+        """
+        if end - start < KEPT_MIN_S:
+            return None
+        sr = self.cfg.sample_rate
+        raw = read_range(self.s.mic_pcm, int(start * sr), int(end * sr))
+        clean = self._segment_audio(block, seg)
+        if not raw.size or not clean.size:
+            return None
+        raw_energy = float(np.mean(raw.astype(np.float64) ** 2))
+        if raw_energy < KEPT_MIN_ENERGY:
+            return None
+        return round(float(np.mean(clean.astype(np.float64) ** 2)) / raw_energy, 4)
 
     def _segment_audio(self, block: Block, seg: Segment) -> np.ndarray:
         sr = self.cfg.sample_rate
@@ -314,6 +338,9 @@ class Pipeline:
                 log.info("echo dropped %.1f-%.1f: %s", rec.start, rec.end, rec.text)
             elif is_residue(rec, sys_recs):
                 log.info("echo residue dropped %.1f-%.1f: %s", rec.start, rec.end, rec.text)
+            elif is_acoustic_residue(rec, sys_recs, self.cfg.echo_kept_max, self.cfg.echo_kept_min_cover):
+                log.info("echo residue (acoustic) dropped %.1f-%.1f kept=%.2f: %s",
+                         rec.start, rec.end, rec.kept, rec.text)
             else:
                 st.records.append(rec)
             changed = True
