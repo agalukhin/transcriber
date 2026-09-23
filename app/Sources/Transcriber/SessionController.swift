@@ -23,6 +23,10 @@ final class SessionController {
     /// True while the running session is private: the note lives outside the vault, so the UI has
     /// to open it differently and say so.
     private(set) var currentIsPrivate = false
+    /// When the running session started and what it is called — the floating button's menu shows
+    /// both. A private session keeps no title, exactly as everywhere else.
+    private(set) var currentStartedAt: Date?
+    private(set) var currentTitle: String?
     /// One-shot override from the menu — forces the next session private whatever the schedule
     /// says, then clears itself.
     var forcePrivateNext = false
@@ -120,6 +124,8 @@ final class SessionController {
             try cap.start { [weak self] chunk in self?.consume(chunk) }
             power.acquire()
             currentIsPrivate = isPrivate
+            currentStartedAt = now
+            currentTitle = isPrivate || info.title.isEmpty ? nil : info.title
             forcePrivateNext = false   // the override is spent only once the session really exists
             state = .recording(dir)
             log.info("session \(dir.id) started (app \(app), title '\(info.title)'\(isPrivate ? ", приватная" : ""))")
@@ -129,6 +135,8 @@ final class SessionController {
             cleanup()
             if let dir = created { discardIfEmpty(dir) }
             currentIsPrivate = false
+            currentStartedAt = nil
+            currentTitle = nil
             state = .idle
             onStateChange?(state)
             onError?("Не удалось начать запись: \(error)")
@@ -145,6 +153,8 @@ final class SessionController {
         do { try dir.requestStop() } catch { log.error("STOP write failed: \(error)") }
         power.release()
         currentIsPrivate = false
+        currentStartedAt = nil
+        currentTitle = nil
         state = .idle
         log.info("session \(dir.id) stopped; mic \(micSamples) samples")
         verifyCaptureReleased()
@@ -155,9 +165,17 @@ final class SessionController {
     /// device is rebuilt under us (sleep, a device switch) — the IOProc simply stops firing,
     /// so silence for longer than a few chunk intervals means the capture has to be rebuilt.
     func checkHealth(now: Date) {
-        guard case .recording(let dir) = state else { return }
+        guard case .recording = state else { return }
         guard now.timeIntervalSince(lastChunkAt) > 5 else { return }
-        log.warn("capture stalled for session \(dir.id): no chunks for \(Int(now.timeIntervalSince(lastChunkAt)))s, restarting")
+        restartCapture(reason: "no chunks for \(Int(now.timeIntervalSince(lastChunkAt)))s", now: now)
+    }
+
+    /// Rebuilds the tap under a running session. The stall watchdog uses it, and so does a change
+    /// of the default input device: waiting the full five seconds there would mean five seconds of
+    /// the old (now gone) mic in the file.
+    func restartCapture(reason: String, now: Date = Date()) {
+        guard case .recording(let dir) = state else { return }
+        log.warn("capture restart for session \(dir.id): \(reason)")
         lastChunkAt = now   // also paces the retries if the restart below fails
         capture?.stop()     // returns after the capture queue drains: mixers/writers are ours again
         if let m = micMixer { micWriter?.write(m.finish()) }

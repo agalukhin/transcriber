@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let placeholderSafetyNet: TimeInterval = 60
     /// Last logged set of mic holders; `pollQueue` only. `nil` = nothing logged yet.
     private var lastMicHolders: Set<String>?
+    /// Keeps the Core Audio default-device listeners alive for the life of the app.
+    private var deviceObserver: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.info("app launched")
@@ -58,7 +60,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             status.setPrivateNext(controller.forcePrivateNext)
             log.info("next session private: \(controller.forcePrivateNext)")
         }
-        floating.onClick = { [weak self] in self?.openNote() }
+        floating.onOpenNote = { [weak self] in self?.openNote() }
+        floating.onStop = { [weak self] in self?.stopRecordingKeepingMeeting() }
+        floating.onHide = { [weak self] in
+            self?.log.info("floating button hidden for this session")
+            self?.floating.hide()
+        }
         controller.onStateChange = { [weak self] state in
             DispatchQueue.main.async { self?.render(state) }
         }
@@ -66,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.status.setProblem(message) }
         }
         installTermHandler()
+        observeAudioDevices()
         // .common, not the default mode: an open menu would otherwise freeze the detector.
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer, forMode: .common)
@@ -77,6 +85,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.poll()
         }
         poll()
+    }
+
+    /// Every switch of the default input or output goes into the log, session or no session: the
+    /// question «почему звук не ушёл в AirPods» can only be answered against a record of what
+    /// macOS actually did. We never touch routing — during a recording an input switch only makes
+    /// the capture restart at once, instead of waiting out the five-second stall watchdog.
+    private func observeAudioDevices() {
+        let input = AudioDevices.defaultInput()
+        let output = AudioDevices.defaultOutput()
+        log.info("devices at launch: input '\(AudioDevices.name(of: input))', output '\(AudioDevices.name(of: output))'")
+        deviceObserver = AudioDevices.observeDefaultDeviceChanges { [weak self] kind, name in
+            guard let self else { return }
+            log.info("default \(kind) changed → '\(name)'")
+            guard kind == "input", controller.current != nil else { return }
+            controller.restartCapture(reason: "default input changed to '\(name)'")
+        }
     }
 
     /// launchd sends SIGTERM on «выход»/logout; the default disposition would kill us mid-session,
@@ -378,7 +402,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             floating.hide()
         case .recording(let dir):
             status.setRecording(true, detail: dir.id, private: controller.currentIsPrivate)
-            floating.show(private: controller.currentIsPrivate)
+            floating.show(private: controller.currentIsPrivate, title: controller.currentTitle,
+                          startedAt: controller.currentStartedAt)
         }
     }
 }

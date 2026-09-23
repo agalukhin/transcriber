@@ -97,6 +97,16 @@ if let i = CommandLine.arguments.firstIndex(of: "--ax-dump") {
     exit(0)
 }
 
+/// `Transcriber --devices` prints the current default input and output devices and exits — the
+/// quick way to check what macOS thinks it is recording from and playing to, without a session.
+if CommandLine.arguments.contains("--devices") {
+    let input = AudioDevices.defaultInput()
+    let output = AudioDevices.defaultOutput()
+    print("вход:  \(AudioDevices.name(of: input)) [\(input?.uid ?? "—")]")
+    print("выход: \(AudioDevices.name(of: output)) [\(output?.uid ?? "—")]")
+    exit(0)
+}
+
 /// `Transcriber --tabs-test [bundleID]` lists the browser's tabs and shows which one it takes for
 /// a meeting; the first run may raise the Automation permission dialog.
 if let i = CommandLine.arguments.firstIndex(of: "--tabs-test") {

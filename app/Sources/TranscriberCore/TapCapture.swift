@@ -84,6 +84,11 @@ public final class TapCapture {
         }
         sysChannels = channels[1]
         Log.shared.info("capture: rate \(sampleRate), mic \(channels[0])ch, tap \(channels[1])ch")
+        // Which devices the session actually started on: a 24 kHz rate is a Bluetooth headset, and
+        // when it vanishes mid-meeting the next line in the log should say what it was.
+        let input = AudioDevices.defaultInput()
+        let output = AudioDevices.defaultOutput()
+        Log.shared.info("capture: input '\(AudioDevices.name(of: input))' \(Int(sampleRate)) Hz, output '\(AudioDevices.name(of: output))'")
 
         var proc: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&proc, agg, queue) { [weak self] _, inData, _, _, _ in
