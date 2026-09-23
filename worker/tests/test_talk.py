@@ -181,3 +181,10 @@ def test_next_best_name_when_top_cover_is_a_shared_mic():
     assert speaker_for_span(tl, 0.0, 10.0, 0.6) == "Александра Казначеева"
     tl2 = [(0.0, 7.0, "Сергей Пацынко"), (7.0, 10.0, "Александра Казначеева")]
     assert speaker_for_span(tl2, 0.0, 10.0, 0.6, shared_names=["Сергей Пацынко"]) is None
+
+
+def test_status_suffix_is_stripped_from_tile_name():
+    from transcriber.talk import clean_name
+    assert clean_name("Алексей Фельде Связь потеряна. Пытаемся восстановить…") == "Алексей Фельде"
+    assert clean_name("  Анна  Олейник ") == "Анна Олейник"
+    assert clean_name("Связь потеряна") == "Связь потеряна"

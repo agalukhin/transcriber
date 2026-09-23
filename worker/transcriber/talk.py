@@ -64,10 +64,23 @@ def _tiles(raw) -> list[Tile]:
     for item in raw or []:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip()
+        name = clean_name(str(item.get("name") or ""))
         if name:
             out.append(Tile(name, bool(item.get("mic")), bool(item.get("active"))))
     return out
+
+
+STATUS_SUFFIXES = ("Связь потеряна", "Пытаемся восстановить", "Подключается", "Reconnecting")
+
+
+def clean_name(name: str) -> str:
+    """Толк дописывает статус соединения прямо в подпись плитки — срезаем его."""
+    out = name
+    for marker in STATUS_SUFFIXES:
+        idx = out.find(marker)
+        if idx > 0:
+            out = out[:idx]
+    return " ".join(out.split())
 
 
 def load_talk(path: Path | str) -> list[TalkSample]:
