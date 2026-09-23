@@ -7,6 +7,9 @@ let package = Package(
     targets: [
         .target(name: "TranscriberCore", path: "Sources/TranscriberCore"),
         .executableTarget(name: "Transcriber", dependencies: ["TranscriberCore"], path: "Sources/Transcriber"),
-        .testTarget(name: "TranscriberCoreTests", dependencies: ["TranscriberCore", "Transcriber"], path: "Tests/TranscriberCoreTests"),
+        // Fixtures/ — куски настоящих AX-дампов, тесты читают их с диска по #filePath,
+        // сборке они не нужны.
+        .testTarget(name: "TranscriberCoreTests", dependencies: ["TranscriberCore", "Transcriber"],
+                    path: "Tests/TranscriberCoreTests", exclude: ["Fixtures"]),
     ]
 )
