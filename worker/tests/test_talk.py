@@ -171,3 +171,13 @@ def test_shared_mic_names_never_become_speakers():
     assert not is_shared("Александра Казначеева", ["Сергей Пацынко"])
     assert speaker_for_span(tl, 0.0, 9.0, 0.6, shared_names=["Сергей Пацынко"]) is None
     assert speaker_for_span(tl, 10.0, 19.0, 0.6, shared_names=["Сергей Пацынко"]) == "Александра Казначеева"
+
+
+def test_next_best_name_when_top_cover_is_a_shared_mic():
+    from transcriber.talk import speaker_for_span
+    tl = [(0.0, 4.0, "Сергей Пацынко"), (4.0, 10.0, "Александра Казначеева")]
+    # 60 % отрезка за Александрой, 40 % за общим микрофоном — имя получает Александра
+    assert speaker_for_span(tl, 0.0, 10.0, 0.6, shared_names=["Сергей Пацынко"]) == "Александра Казначеева"
+    assert speaker_for_span(tl, 0.0, 10.0, 0.6) == "Александра Казначеева"
+    tl2 = [(0.0, 7.0, "Сергей Пацынко"), (7.0, 10.0, "Александра Казначеева")]
+    assert speaker_for_span(tl2, 0.0, 10.0, 0.6, shared_names=["Сергей Пацынко"]) is None

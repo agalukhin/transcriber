@@ -187,12 +187,13 @@ def speaker_for_span(timeline: list[Span], start: float, end: float, min_share: 
     cover = _cover(timeline, start, end)
     if not cover:
         return None
-    name, covered = sorted(cover.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-    if covered / total < min_share:
-        return None
-    if is_room(name, room_patterns) or is_bot(name, bot_patterns) or is_shared(name, shared_names):
-        return None
-    return name
+    # Переговорки, боты и общие микрофоны пропускаем и смотрим на следующего по покрытию:
+    # когда активны двое, первым в ленте может стоять именно общий микрофон.
+    for name, covered in sorted(cover.items(), key=lambda kv: (-kv[1], kv[0])):
+        if is_room(name, room_patterns) or is_bot(name, bot_patterns) or is_shared(name, shared_names):
+            continue
+        return name if covered / total >= min_share else None
+    return None
 
 
 def talk_participants(samples: list[TalkSample], bot_patterns: list[str] | None = None) -> list[str]:
