@@ -6,6 +6,7 @@ from transcriber.asr import Segment
 from transcriber.config import Config
 from transcriber.pipeline import Pipeline, name_clusters, recluster_records
 from transcriber.session import Rec, Session, State
+from transcriber.voices import VoiceLibrary
 from tests.conftest import (FakeAsr, FakeEmbedder, SR, dominant_freq, fake_prob, make_session, one_hot,
                             seed_voice, silence, to_pcm_bytes, tone)
 
@@ -592,6 +593,181 @@ def test_names_survive_a_second_finalization_and_disappear_with_the_profile(vaul
     assert [r.speaker for r in st.records] == ["Speaker 1"] * 3 and st.speaker_names == {}
 
 
+# ---- имена из Толка ----------------------------------------------------------
+
+
+ЮЛЯ = "Юлия Михайлова"
+КОМНАТА = "609.1 Ориентир 1"
+БОТ = "KTalk Secretary (саммаризатор встреч)"
+
+
+def talk_line(t: float, active: str | None, names: list[str]) -> dict:
+    return {"t": t, "participants": [{"name": n, "mic": False, "active": n == active} for n in names]}
+
+
+def write_talk(d: Path, samples: list[dict]) -> Path:
+    p = d / "talk.jsonl"
+    p.write_text("\n".join(json.dumps(s, ensure_ascii=False) for s in samples) + "\n", encoding="utf-8")
+    return p
+
+
+def _two_voices(d: Path, first: int = 5, second: int = 3):
+    """Два голоса на канале собеседников: ``first`` реплик на 880 Гц, затем ``second`` на 1200."""
+    freqs = [880] * first + [1200] * second
+    sys_ = np.concatenate([silence(0.5)] + [x for f in freqs for x in (tone(1.0, f), silence(1.0))]
+                          + [silence(1.0)])
+    write(d, "mic.pcm", silence(len(sys_) / SR + 1.0))
+    write(d, "sys.pcm", sys_)
+
+
+ALL_TILES = [ЮЛЯ, КОМНАТА, БОТ]
+
+
+def _talk_session(tmp_path: Path, **kw) -> Path:
+    """Пять реплик под плиткой Юлии, три — под плиткой переговорки."""
+    d = make_session(tmp_path / "sessions", **kw)
+    _two_voices(d)
+    write_talk(d, [talk_line(0.0, ЮЛЯ, ALL_TILES), talk_line(10.0, КОМНАТА, ALL_TILES)])
+    return d
+
+
+def test_talk_names_one_cluster_and_leaves_the_room_cluster_alone(vault, tmp_path):
+    d = _talk_session(tmp_path)
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    recs = sorted([r for r in s.state.records if r.channel == "sys"], key=lambda r: r.start)
+    assert [r.text for r in recs] == ["tone880"] * 5 + ["tone1200"] * 3
+    assert [r.talk for r in recs] == [ЮЛЯ] * 5 + [None] * 3        # переговорка имени не даёт
+    assert [r.speaker for r in recs] == [ЮЛЯ] * 5 + ["Speaker 2"] * 3
+    assert s.state.speaker_names == {"0": ЮЛЯ}
+    raw = Path(s.state.raw_path).read_text()
+    assert f"{ЮЛЯ}: tone880" in raw and "Speaker 2: tone1200" in raw
+    assert f"Участники по данным Толка: {ЮЛЯ}, {КОМНАТА}." in raw   # бот в участники не идёт
+    assert "Секретарь" not in raw and "KTalk" not in raw
+
+
+def test_talk_name_survives_a_restart_in_state_json(vault, tmp_path):
+    d = _talk_session(tmp_path)
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.step()
+    saved = json.loads((d / "state.json").read_text())["records"]
+    assert [r["talk"] for r in saved if r["channel"] == "sys"][:3] == [ЮЛЯ] * 3
+
+
+def test_talk_cluster_goes_into_the_voice_library_by_itself(vault, tmp_path):
+    d = _talk_session(tmp_path)
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    prof = VoiceLibrary(cfg.voices_dir).get(ЮЛЯ)
+    assert prof is not None and prof.count == 5              # пять отпечатков кластера 880 Гц
+    assert prof.sources == ["2026-09-15-1430:talk"]
+    assert VoiceLibrary(cfg.voices_dir).names() == [ЮЛЯ]     # переговорка профиля не заводит
+
+
+def test_autolearn_can_be_turned_off_without_losing_the_name(vault, tmp_path):
+    d = _talk_session(tmp_path)
+    cfg, s, p = build(vault, tmp_path / "sessions", talk_autolearn=False, **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {"0": ЮЛЯ}
+    assert VoiceLibrary(cfg.voices_dir).names() == []
+
+
+def test_a_short_talk_cluster_names_but_does_not_teach(vault, tmp_path):
+    """Три реплики — имя в транскрипте есть, в библиотеке нет: порог обучения выше."""
+    d = make_session(tmp_path / "sessions")
+    _two_voices(d, first=3, second=3)
+    write_talk(d, [talk_line(0.0, ЮЛЯ, ALL_TILES), talk_line(6.0, КОМНАТА, ALL_TILES)])
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {"0": ЮЛЯ}
+    assert VoiceLibrary(cfg.voices_dir).names() == []
+
+
+def test_talk_beats_the_voice_library(vault, tmp_path):
+    """Библиотека узнала в голосе одного, Толк показывает другого — верим интерфейсу встречи."""
+    d = _talk_session(tmp_path)
+    seed_voice(tmp_path, "Ярослав Серов", [one_hot(880)])
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {"0": ЮЛЯ}
+    assert "Ярослав Серов" not in Path(s.state.raw_path).read_text()
+
+
+def test_talk_stub_gets_the_participants_while_it_is_still_a_stub(vault, tmp_path):
+    d = _talk_session(tmp_path)
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    note = Path(s.state.note_path)
+    assert "participants: [Владислав, Егор Спирин]" in note.read_text()
+    note.write_text(note.read_text().replace("<!-- дистиллят: ожидает дейли-рутин -->", "уже записал мысль"))
+    p.finalize()
+    body = note.read_text()
+    assert f"participants: [Владислав, Егор Спирин, {ЮЛЯ}, {КОМНАТА}]" in body
+    assert f"**Участники:** Владислав, Егор Спирин, {ЮЛЯ}, {КОМНАТА}" in body
+    assert "уже записал мысль" in body          # мысли под заголовком не мешают дописать шапку
+
+
+def test_stub_participants_are_not_touched_once_the_tag_is_gone(vault, tmp_path):
+    d = _talk_session(tmp_path)
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    note = Path(s.state.note_path)
+    note.write_text(note.read_text().replace("tags: [meeting, stub]", "tags: [meeting]"))
+    before = note.read_text()
+    p.finalize()
+    assert note.read_text() == before           # заметку ведёт человек — участников не правим
+
+
+def _talk_state(records: list[tuple[float, float, str | None]], labels: list[int]) -> State:
+    st = State(embeddings=[[1.0, 0.0, 0.0]] * len(records), speaker_of_emb=list(labels))
+    st.records = [Rec(channel="sys", start=a, end=b, text=f"реплика {i}", speaker="Speaker 1",
+                      emb=i, talk=name) for i, (a, b, name) in enumerate(records)]
+    return st
+
+
+def test_the_vote_needs_three_records_and_agreement(vault, tmp_path):
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions")
+    st = _talk_state([(0.0, 2.0, ЮЛЯ), (3.0, 5.0, ЮЛЯ)], [0, 0])
+    recluster_records(cfg, st)
+    assert st.speaker_names == {}                       # двух названных реплик мало
+
+    st = _talk_state([(0.0, 2.0, ЮЛЯ), (3.0, 5.0, "Дарья"), (6.0, 8.0, "Егор Спирин")], [0, 0, 0])
+    recluster_records(cfg, st)
+    assert st.speaker_names == {}                       # имена разошлись — кластер без имени
+
+
+TIMELINE = [(0.0, 10.0, ЮЛЯ), (10.0, 14.0, "Дарья")]
+
+
+def test_a_record_covered_whole_keeps_its_own_talk_name(vault, tmp_path):
+    """Кластер назван большинством, но одна реплика целиком под чужой плиткой — она её и берёт."""
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", talk_autolearn=False)
+    st = _talk_state([(0.0, 4.0, None), (4.0, 8.0, None), (8.0, 10.0, None), (10.5, 12.5, None)],
+                     [0, 0, 0, 0])
+    recluster_records(cfg, st, timeline=TIMELINE)
+    assert [r.talk for r in st.records] == [ЮЛЯ, ЮЛЯ, ЮЛЯ, "Дарья"]   # имена пересчитаны по ленте
+    assert st.speaker_names == {"0": ЮЛЯ}
+    assert [r.speaker for r in st.records] == [ЮЛЯ, ЮЛЯ, ЮЛЯ, "Дарья"]
+
+
+def test_a_partly_covered_record_keeps_the_cluster_name(vault, tmp_path):
+    """Плитка накрыла реплику меньше чем на 0.9 — метка кластера сильнее, иначе она бы мигала."""
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", talk_autolearn=False)
+    st = _talk_state([(0.0, 4.0, None), (4.0, 8.0, None), (8.0, 10.0, None), (9.5, 12.5, None)],
+                     [0, 0, 0, 0])
+    recluster_records(cfg, st, timeline=TIMELINE)
+    assert [r.talk for r in st.records] == [ЮЛЯ, ЮЛЯ, ЮЛЯ, "Дарья"]   # 2.5 с из 3 — меньше 0.9
+    assert [r.speaker for r in st.records] == [ЮЛЯ] * 4
+
+
+def test_a_missing_talk_file_changes_nothing(vault, tmp_path):
+    d = make_session(tmp_path / "sessions")
+    _two_voices(d, first=3, second=3)
+    cfg, s, p = build(vault, tmp_path / "sessions", **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {}
+    assert {r.speaker for r in s.state.records if r.channel == "sys"} == {"Speaker 1", "Speaker 2"}
+    assert "Участники по данным Толка" not in Path(s.state.raw_path).read_text()
+
+
 # ---- приватная запись --------------------------------------------------------
 
 
@@ -618,6 +794,22 @@ def test_private_session_keeps_speaker_n_and_never_reads_the_library(vault, tmp_
     raw = Path(s.state.raw_path)
     assert raw == private_dir / "2026-09-15-1430/transcript.md"
     assert "Опознаны по голосу" not in raw.read_text()
+    assert vault_files(vault) == []
+
+
+def test_private_session_ignores_the_talk_file_entirely(vault, tmp_path, private_dir):
+    """Плитки Толка у приватной записи не спрашиваются: ни имён, ни участников, ни библиотеки."""
+    from tests.conftest import vault_files
+
+    d = _talk_session(tmp_path, private=True)
+    cfg, s, p = build(vault, tmp_path / "sessions", private_dir=private_dir, **FAST)
+    p.finalize()
+    assert s.state.speaker_names == {}
+    assert {r.speaker for r in s.state.records if r.channel == "sys"} == {"Speaker 1", "Speaker 2"}
+    assert all(r.talk is None for r in s.state.records)
+    assert VoiceLibrary(cfg.voices_dir).names() == []
+    text = Path(s.state.raw_path).read_text()
+    assert ЮЛЯ not in text and "Участники по данным Толка" not in text
     assert vault_files(vault) == []
 
 

@@ -16,6 +16,8 @@ PRIVATE_FILE_MODE = 0o600
 PRIVATE_HEADER = "Приватная запись. Вне рабочего вольта."
 THOUGHTS = "## Мысли Владислава"
 STUB_TAG = re.compile(r"^tags:.*\bstub\b", re.M)
+FRONT_PARTICIPANTS = re.compile(r"^participants:.*$", re.M)
+BODY_PARTICIPANTS = re.compile(r"^(\*\*Дата:\*\*.*\*\*Участники:\*\* ).*$", re.M)
 
 
 def app_label(app: str) -> str:
@@ -70,7 +72,7 @@ def hhmm(seconds: float) -> str:
 
 
 def render_raw(meta: Meta, records: list[Rec], n_speakers: int, status_text: str, marker_every_s: int = 300,
-               identified: list[str] | None = None) -> str:
+               identified: list[str] | None = None, talk_participants: list[str] | None = None) -> str:
     date, _ = stamp(meta)
     title = title_of(meta)
     who = ", ".join(meta.participants) if meta.participants else "не получены"
@@ -84,7 +86,8 @@ def render_raw(meta: Meta, records: list[Rec], n_speakers: int, status_text: str
         f"# {title} — {meta.started_at.strftime('%Y-%m-%d %H:%M')}", "",
         *mark,
         f"Локальная запись ({app}). Участники: {who}. "
-        f"Говорящих на канале собеседников: {n_speakers}. "
+        + (f"Участники по данным Толка: {', '.join(talk_participants)}. " if talk_participants else "")
+        + f"Говорящих на канале собеседников: {n_speakers}. "
         + (f"Опознаны по голосу: {', '.join(identified)}. " if identified else "")
         + f"Статус: {status_text}. "
         "«Me» — Владислав (микрофон), «Speaker N» — собеседники (системный звук), метки по голосу.", "",
@@ -104,10 +107,20 @@ def render_raw(meta: Meta, records: list[Rec], n_speakers: int, status_text: str
     return "\n".join(lines)
 
 
+def participants_of(meta: Meta, extra: list[str] | None = None) -> list[str]:
+    """Участники заметки: Владислав первым, дальше Толк из ``meta`` и плитки встречи без повторов."""
+    out = ["Владислав"]
+    for name in list(meta.participants) + list(extra or []):
+        name = (name or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def render_stub(meta: Meta, raw_stem: str) -> str:
     date, hhmm = stamp(meta)
     title = clean_title(title_of(meta))
-    participants = ", ".join(["Владислав"] + [p for p in meta.participants if p != "Владислав"])
+    participants = ", ".join(participants_of(meta))
     return "\n".join([
         "---", "type: meeting", f"id: MTG-{date}-{hhmm}", f"title: {title}", f"date: {date}",
         f"participants: [{participants}]", "projects: []", f'transcript: "[[{raw_stem}]]"', "tags: [meeting, stub]", "---", "",
@@ -122,14 +135,20 @@ def render_private_note(meta: Meta) -> str:
     return f"# Заметки — {meta.started_at.strftime('%Y-%m-%d %H:%M')}\n\n"
 
 
+def has_stub_tag(text: str) -> bool:
+    """Заглушка всё ещё за воркером: тег ``stub`` на месте. Мысли под ним могут быть уже написаны."""
+    head, sep, _body = text.partition(THOUGHTS)
+    return bool(sep) and bool(STUB_TAG.search(head))
+
+
 def is_untouched_stub(text: str) -> bool:
     """Заглушка, в которую ещё не писали: тег ``stub`` на месте, секция мыслей пуста.
 
     Всё спорное считаем тронутым: снести чужую мысль хуже, чем оставить лишний файл.
     """
-    head, sep, body = text.partition(THOUGHTS)
-    if not sep or not STUB_TAG.search(head):
+    if not has_stub_tag(text):
         return False
+    body = text.partition(THOUGHTS)[2]
     return not [ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("<!--")]
 
 
@@ -174,16 +193,43 @@ def pinned_raw_path(cfg: Config, session: Session) -> Path:
     return raw_path(cfg, session.meta)
 
 
-def write_raw(cfg: Config, session: Session, status_text: str) -> Path:
+def write_raw(cfg: Config, session: Session, status_text: str,
+              talk_participants: list[str] | None = None) -> Path:
     st = session.state
     sys_speakers = {r.speaker for r in st.records if r.channel == "sys"}
     n_speakers = max(len(set(st.speaker_of_emb)), len(sys_speakers))
     identified = [st.speaker_names[k] for k in sorted(st.speaker_names, key=lambda x: (len(x), x))]
     p = pinned_raw_path(cfg, session)
-    text = render_raw(session.meta, st.records, n_speakers, status_text, cfg.marker_every_s, identified)
+    text = render_raw(session.meta, st.records, n_speakers, status_text, cfg.marker_every_s, identified,
+                      talk_participants)
     write_text(cfg, session.meta, p, text)
     st.raw_path = str(p)
     return p
+
+
+def update_stub_participants(cfg: Config, session: Session, talk_participants: list[str]) -> bool:
+    """Дописать в MTG-заглушку участников, которых показал Толк. True — файл изменился.
+
+    Правим только пока заметка за воркером, то есть пока на ней тег ``stub``: мысли под
+    заголовком к этому моменту уже могли появиться, а шапка всё ещё наша. Тег сняли —
+    заметку ведёт человек или дистиллер, и список участников трогать нельзя.
+    """
+    if session.meta.private or not talk_participants:
+        return False
+    pinned = session.state.note_path
+    p = Path(pinned) if pinned else None
+    if p is None or not p.exists():
+        return False
+    text = p.read_text(encoding="utf-8")
+    if not has_stub_tag(text):
+        return False
+    names = ", ".join(participants_of(session.meta, talk_participants))
+    new = FRONT_PARTICIPANTS.sub(lambda m: f"participants: [{names}]", text, count=1)
+    new = BODY_PARTICIPANTS.sub(lambda m: m.group(1) + names, new, count=1)
+    if new == text:
+        return False
+    atomic_write_text(p, new)
+    return True
 
 
 def ensure_stub(cfg: Config, session: Session) -> Path:

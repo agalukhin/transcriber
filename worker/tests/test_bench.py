@@ -8,6 +8,7 @@ import yaml
 from transcriber import bench
 from transcriber.config import Config
 from transcriber.session import Rec
+from transcriber.voices import VoiceLibrary
 from tests.conftest import FakeAsr, FakeEmbedder, fake_prob, silence, to_pcm_bytes, tone
 
 from transcriber import daemon
@@ -314,6 +315,22 @@ def test_bench_ignores_an_attempt_to_redirect_the_run_into_the_real_vault(vault,
     run = bench.run_bench(cfg, "synthetic", "побег", overrides={"vault_root": vault},
                           models=fake_models())
     assert (run / "raw.md").exists() and _vault_files(vault) == []
+
+
+def test_bench_carries_the_talk_file_into_the_sandbox(vault, tmp_path):
+    """У эталона может быть talk.jsonl — прогон должен видеть те же имена, что живая запись."""
+    cfg = Config(vault_root=vault, sessions_dir=tmp_path / "sessions", bench_dir=tmp_path / "bench")
+    d = _synthetic_bench(cfg.bench_dir)
+    (d / "talk.jsonl").write_text(json.dumps(
+        {"t": 0.0, "participants": [{"name": "Юлия Михайлова", "mic": False, "active": True}]},
+        ensure_ascii=False) + "\n", encoding="utf-8")
+    run = bench.run_bench(cfg, "synthetic", "с-толком", overrides={"block_min_s": 1.0},
+                          models=fake_models())
+    raw = (run / "raw.md").read_text(encoding="utf-8")
+    assert "Участники по данным Толка: Юлия Михайлова." in raw
+    assert (cfg.bench_dir / "synthetic/talk.jsonl").exists()      # эталон на месте
+    assert yaml.safe_load((run / "config.yaml").read_text(encoding="utf-8"))["talk_autolearn"] is False
+    assert VoiceLibrary(cfg.voices_dir).names() == []             # эталон не пополняет библиотеку
 
 
 def test_bench_keeps_a_private_reference_recording_inside_the_sandbox(vault, tmp_path, private_dir):

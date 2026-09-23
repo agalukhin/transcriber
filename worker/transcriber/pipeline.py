@@ -15,8 +15,9 @@ from .pcm import PcmReader, read_range
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .session import Rec, Session, State
 from .speakers import OnlineClusterer, absorb_small_clusters, label, recluster
+from .talk import MIN_SHARE, Span, TalkFile, is_bot, is_room, span_share, speaker_for_span
 from .vad import Segmenter
-from .vault import ensure_stub, write_raw
+from .vault import ensure_stub, update_stub_participants, write_raw
 from .voices import VoiceLibrary, centroid_of
 
 log = logging.getLogger("transcriber")
@@ -25,6 +26,12 @@ PROMPT_LEAK = "prompt leak"     # имя правила из quality.junk_reason
 CARRY_MAX = 200                 # столько символов прошлого блока канала уносим в следующий промпт
 KEPT_MIN_ENERGY = 1e-8          # тише — сырой микрофон почти молчит, доля энергии ничего не значит
 KEPT_MIN_S = 0.1                # короче — доля по паре кадров STFT, ей верить нельзя
+
+TALK_VOTE_MIN = 3        # меньше названных реплик в кластере — голосовать не на чем
+TALK_VOTE_AGREE = 0.7    # столько длительности названных реплик должно приходиться на одно имя
+TALK_RECORD_KEEP = 0.9   # реплика спорит с именем своего кластера, только если накрыта целиком
+TALK_LEARN_MIN_EMB = 5   # кластер короче в библиотеку не учим: отпечаток ненадёжен
+TALK_LEARN_AGREE = 0.8   # ...и голосование должно быть увереннее, чем просто для имени в Raw
 
 
 def name_clusters(cfg: Config, st: State, library: VoiceLibrary | None = None) -> dict[int, str]:
@@ -64,23 +71,122 @@ def name_clusters(cfg: Config, st: State, library: VoiceLibrary | None = None) -
     return mapping
 
 
+def embeddings_by_cluster(st: State) -> dict[int, list[list[float]]]:
+    by_cluster: dict[int, list[list[float]]] = {}
+    for i, cluster in enumerate(st.speaker_of_emb[:len(st.embeddings)]):
+        by_cluster.setdefault(int(cluster), []).append(st.embeddings[i])
+    return by_cluster
+
+
+def talk_vote(st: State) -> dict[int, tuple[str, float]]:
+    """Голосование именами Толка внутри голосового кластера: {кластер: (имя, согласие)}.
+
+    Голос взвешен длительностью реплики: секунда речи весит секунду, а не «одну реплику», —
+    иначе десяток «ага» перебьёт связный монолог. Кластеру нужно не меньше ``TALK_VOTE_MIN``
+    названных реплик и согласие от ``TALK_VOTE_AGREE``: Толк подсвечивает по громкости и на
+    перебивках ошибается, поэтому решает большинство, а не первое попавшееся имя.
+
+    Два кластера могут законно получить одно имя: голос одного человека иногда расходится на
+    два кластера (гарнитура и динамик ноутбука), и это лучше, чем отдать имя одному из них.
+    """
+    by_cluster: dict[int, list[Rec]] = {}
+    for r in st.records:
+        if r.channel != "sys" or r.emb is None or not (0 <= r.emb < len(st.speaker_of_emb)):
+            continue
+        by_cluster.setdefault(int(st.speaker_of_emb[r.emb]), []).append(r)
+    out: dict[int, tuple[str, float]] = {}
+    for cluster, recs in by_cluster.items():
+        weights: dict[str, float] = {}
+        named = 0
+        for r in recs:
+            if not r.talk:
+                continue
+            named += 1
+            weights[r.talk] = weights.get(r.talk, 0.0) + max(0.0, r.end - r.start)
+        total = sum(weights.values())
+        if named < TALK_VOTE_MIN or total <= 0:
+            continue
+        name, weight = sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        agreement = weight / total
+        if agreement < TALK_VOTE_AGREE:
+            log.info("talk: %s — имена расходятся (%s, согласие %.2f), остаётся без имени",
+                     label(cluster), ", ".join(sorted(weights)), agreement)
+            continue
+        out[cluster] = (name, agreement)
+        log.info("talk: %s → %s (согласие %.2f, %d реплик из %d)", label(cluster), name, agreement,
+                 named, len(recs))
+    return out
+
+
+def talk_autolearn(cfg: Config, st: State, votes: dict[int, tuple[str, float]], session_id: str) -> None:
+    """Отпечатки кластеров, уверенно названных Толком, — в библиотеку голосов.
+
+    Раньше библиотека пополнялась только руками (``transcriber learn``), и это был весь смысл
+    команды; Толк называет говорящего сам, так что учить можно на ходу. Планка выше, чем для
+    имени в транскрипте: ошибка в Raw живёт одну встречу, ошибка в библиотеке — все следующие.
+    Источник у отпечатков один на сессию (``<сессия>:talk``), и прошлый вклад этой же сессии
+    снимается перед записью — повторный ``refinalize`` не должен копить дубли.
+    """
+    if not (cfg.talk_autolearn and session_id):
+        return
+    by_cluster = embeddings_by_cluster(st)
+    by_name: dict[str, list[list[float]]] = {}
+    for cluster, (name, agreement) in sorted(votes.items()):
+        embs = by_cluster.get(cluster, [])
+        if len(embs) < TALK_LEARN_MIN_EMB or agreement < TALK_LEARN_AGREE:
+            continue
+        if is_room(name, cfg.talk_room_patterns) or is_bot(name, cfg.talk_bot_patterns):
+            continue                     # такие имена голосование и не выдаёт, но библиотека дороже
+        by_name.setdefault(name, []).extend(embs)
+    if not by_name:
+        return
+    source = f"{session_id}:talk"
+    lib = VoiceLibrary(cfg.voices_dir, cfg.voice_match_similarity)
+    for name, embs in by_name.items():
+        lib.forget_source(name, source)
+        prof = lib.add(name, embs, source=source)
+        if prof is not None:
+            log.info("voices: %s ← Толк, +%d отпечатков (всего %d)", name, len(embs), prof.count)
+
+
 def recluster_records(cfg: Config, st: State, library: VoiceLibrary | None = None,
-                      private: bool = False) -> None:
+                      private: bool = False, timeline: list[Span] | None = None,
+                      session_id: str | None = None) -> None:
     """Глобальная перекластеризация по всем эмбеддингам сессии + перелейблинг sys-реплик.
 
     Общая для finalize() и `transcriber refinalize`, поэтому вынесена из класса.
     После перекластеризации кластеры сверяются с библиотекой голосов: опознанные получают
     имя человека вместо «Speaker N», индекс кластера остаётся в ``speaker_of_emb``.
 
-    У приватной записи имён нет вовсе: библиотека не читается, все остаются «Speaker N» —
-    приватный разговор не должен опознаваться по рабочим голосам и попадать в библиотеку.
+    Имена из Толка идут первыми и бьют библиотеку: интерфейс встречи знает, кто говорит,
+    а библиотека только догадывается по отпечатку. Имя, уже занятое голосованием, второму
+    кластеру от библиотеки не достаётся.
+
+    У приватной записи имён нет вовсе: библиотека не читается, Толк не спрашивается, все
+    остаются «Speaker N» — приватный разговор не должен опознаваться по рабочим голосам,
+    попадать в библиотеку и вообще светить именами.
     """
     if len(st.embeddings) >= 2:
         new = recluster(np.asarray(st.embeddings, dtype=np.float32), cfg.speaker_similarity)
         st.speaker_of_emb = absorb_small_clusters(new, st.embeddings)
     if private:
         st.speaker_names = {}
-    names: dict[int, str] = {} if private else name_clusters(cfg, st, library)
+    spans: list[Span] = [] if private else list(timeline or [])
+    if spans:
+        # пересчитываем по всей ленте: во время записи хвост talk.jsonl ещё не был дописан
+        for r in st.records:
+            if r.channel == "sys":
+                r.talk = speaker_for_span(spans, r.start, r.end, MIN_SHARE,
+                                          cfg.talk_room_patterns, cfg.talk_bot_patterns)
+    votes = {} if private else talk_vote(st)
+    names: dict[int, str] = {c: name for c, (name, _agreement) in votes.items()}
+    if not private:
+        taken = set(names.values())
+        for cluster, name in name_clusters(cfg, st, library).items():
+            if cluster not in names and name not in taken:
+                names[cluster] = name
+        talk_autolearn(cfg, st, votes, session_id or "")
+    st.speaker_names = {str(c): names[c] for c in sorted(names)}
     if not st.embeddings:
         return
 
@@ -98,6 +204,11 @@ def recluster_records(cfg: Config, st: State, library: VoiceLibrary | None = Non
             last = r.speaker
         else:
             r.speaker = last
+        # кластер сильнее своей реплики — иначе метки мигали бы посреди монолога; уступаем
+        # только реплике, которую Толк накрыл целиком: там ошибиться кластером легче
+        if r.talk and r.talk != r.speaker and spans and \
+                span_share(spans, r.start, r.end, r.talk) >= TALK_RECORD_KEEP:
+            r.speaker = r.talk
 
 
 Asr = Callable[[np.ndarray, str], list[Segment]]
@@ -136,10 +247,24 @@ class Pipeline:
                                    include_participants=bool(session.meta.participants))
         self.prompt_words = prompt_vocabulary(session.meta.participants, cfg.glossary)
         self.last_sys_speaker = next((r.speaker for r in reversed(st.records) if r.channel == "sys"), label(0))
+        # плитки Толка: файла может не быть вовсе, и он дописывается по ходу встречи
+        self.talk = TalkFile(session.dir / "talk.jsonl")
         ensure_stub(cfg, session)
         if st.raw_path is None:
-            write_raw(cfg, session, "идёт запись")
+            write_raw(cfg, session, "идёт запись", self.talk_participants())
             session.save_state()
+
+    def talk_participants(self) -> list[str]:
+        """Кого Толк показал на встрече. У приватной записи не спрашиваем даже при наличии файла."""
+        if self.s.meta.private:
+            return []
+        return self.talk.participants(self.cfg.talk_bot_patterns)
+
+    def talk_name(self, start: float, end: float) -> str | None:
+        if self.s.meta.private:
+            return None
+        return speaker_for_span(self.talk.timeline, start, end, MIN_SHARE,
+                                self.cfg.talk_room_patterns, self.cfg.talk_bot_patterns)
 
     # ---- live -------------------------------------------------------------
 
@@ -163,7 +288,7 @@ class Pipeline:
         moved = offsets != (st.mic_offset, st.sys_offset)
         st.mic_offset, st.sys_offset = offsets
         if changed:
-            write_raw(self.cfg, self.s, "идёт запись")
+            write_raw(self.cfg, self.s, "идёт запись", self.talk_participants())
         if changed or moved:
             self.s.save_state()
         return changed
@@ -247,6 +372,8 @@ class Pipeline:
         return retry if retry is not None else segments
 
     def _handle_block(self, ch: str, block: Block) -> None:
+        if ch == "sys":
+            self.talk.refresh()     # файл растёт вместе со встречей: перед блоком перечитываем
         prompt = self._prompt_for(ch)
         segments = self._transcribe(block, prompt)
         if segments is None:
@@ -278,6 +405,7 @@ class Pipeline:
             self.s.state.pending_mic.append(rec)
             return
         st = self.s.state
+        rec.talk = self.talk_name(rec.start, rec.end)
         audio = self._segment_audio(block, seg) if seg is not None else np.zeros(0, dtype=np.float32)
         if len(audio) >= int(self.cfg.min_embed_s * self.cfg.sample_rate):
             emb = self.embed(audio)
@@ -367,9 +495,13 @@ class Pipeline:
         self.s.state.sys_offset = self._resume_point("sys")
         self._flush_pending_mic(force=True)
         st = self.s.state
-        recluster_records(self.cfg, st, private=self.s.meta.private)
+        self.talk.refresh()
+        recluster_records(self.cfg, st, private=self.s.meta.private, timeline=self.talk.timeline,
+                          session_id=self.s.meta.id)
         st.status = "finalized"
-        write_raw(self.cfg, self.s, f"финализирован {datetime.now().strftime('%H:%M')}")
+        participants = self.talk_participants()
+        write_raw(self.cfg, self.s, f"финализирован {datetime.now().strftime('%H:%M')}", participants)
+        update_stub_participants(self.cfg, self.s, participants)
         self.s.save_state()
         if not self.cfg.keep_audio:
             for p in (self.s.mic_pcm, self.s.sys_pcm):

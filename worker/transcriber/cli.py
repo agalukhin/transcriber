@@ -5,8 +5,9 @@
 * ``transcriber finalize SESSION_ID`` — финализация сессии (нужны аудио и модели);
 * ``transcriber refinalize SESSION_ID`` — постобработка уже сохранённого ``state.json``
   без аудио и без ASR: тексты через фильтры галлюцинаций, эхо-фильтр по всем mic-репликам,
-  перекластеризация эмбеддингов текущими порогами, перезапись Raw. Нужна, когда пороги
-  или фильтры поменялись, а переслушать встречу уже нечем — аудио удалено;
+  перекластеризация эмбеддингов текущими порогами, имена из ``talk.jsonl`` заново (плитки
+  Толка переживают сессию), перезапись Raw. Нужна, когда пороги или фильтры поменялись,
+  а переслушать встречу уже нечем — аудио удалено;
 * ``transcriber retranscribe SESSION_ID`` — полный повторный прогон сессии по сохранённому
   ``mic.pcm``/``sys.pcm``: state сбрасывается (Raw и MTG остаются на своих путях) и вся
   дорожка проходит ASR заново с текущим конфигом. Нужна при ``keep_audio: true``, когда
@@ -62,7 +63,9 @@ from .pipeline import Pipeline, recluster_records
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .speakers import label
 from .session import Session, SessionLocked, State, atomic_write_text, session_lock
-from .vault import ensure_stub, is_untouched_stub, note_path, write_raw, write_text
+from .talk import TalkFile
+from .vault import (ensure_stub, is_untouched_stub, note_path, update_stub_participants, write_raw,
+                    write_text)
 from .voices import VoiceLibrary, VoiceProfile
 
 log = logging.getLogger("transcriber")
@@ -157,8 +160,14 @@ def _refinalize(cfg: Config, session_id: str) -> Path:
             continue
         kept.append(r)
     st.records = kept
-    recluster_records(cfg, st, private=session.meta.private)
-    p = write_raw(cfg, session, f"финализирован повторно {datetime.now().strftime('%H:%M')}")
+    # имена из Толка пересчитываются от исходных плиток: talk.jsonl переживает сессию, а пороги
+    # и шаблоны могли поменяться — ровно та же логика, что на финализации
+    talk = TalkFile(cfg.sessions_dir / session_id / "talk.jsonl")
+    recluster_records(cfg, st, private=session.meta.private, timeline=talk.timeline,
+                      session_id=session_id)
+    participants = [] if session.meta.private else talk.participants(cfg.talk_bot_patterns)
+    p = write_raw(cfg, session, f"финализирован повторно {datetime.now().strftime('%H:%M')}", participants)
+    update_stub_participants(cfg, session, participants)
     session.save_state()
     return p
 

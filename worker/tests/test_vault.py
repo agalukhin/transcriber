@@ -169,6 +169,70 @@ def test_private_paths_are_pinned_after_first_write(vault, private_dir):
     assert len(list((private_dir / "2026-09-15-1430").iterdir())) == 2
 
 
+# ---- участники из Толка ------------------------------------------------------
+
+
+def test_render_raw_names_the_talk_participants_separately():
+    text = render_raw(meta(), [], n_speakers=1, status_text="идёт запись",
+                      talk_participants=["Юлия Михайлова", "609.1 Ориентир 1"])
+    assert "Участники: Егор Спирин, Ярослав Серов." in text
+    assert "Участники по данным Толка: Юлия Михайлова, 609.1 Ориентир 1." in text
+    assert "Участники по данным Толка" not in render_raw(meta(), [], 1, "идёт запись")
+
+
+def _stub_session(vault, thoughts: str = "") -> tuple[Config, Session, "Path"]:
+    from pathlib import Path
+
+    cfg = Config(vault_root=vault)
+    s = Session(vault / "s", meta(), State())
+    write_raw(cfg, s, status_text="идёт запись")
+    n = ensure_stub(cfg, s)
+    if thoughts:
+        n.write_text(n.read_text() + thoughts)
+    return cfg, s, Path(n)
+
+
+def test_stub_participants_are_extended_while_the_stub_tag_is_there(vault):
+    from transcriber.vault import update_stub_participants
+
+    cfg, s, n = _stub_session(vault, thoughts="\nуже записанная мысль\n")
+    assert update_stub_participants(cfg, s, ["Юлия Михайлова", "Ярослав Серов"]) is True
+    body = n.read_text()
+    assert "participants: [Владислав, Егор Спирин, Ярослав Серов, Юлия Михайлова]" in body
+    assert "**Участники:** Владислав, Егор Спирин, Ярослав Серов, Юлия Михайлова" in body
+    assert "уже записанная мысль" in body            # мысли не трогаем
+    assert update_stub_participants(cfg, s, ["Юлия Михайлова", "Ярослав Серов"]) is False  # второй раз нечего
+
+
+def test_stub_participants_are_left_alone_without_the_stub_tag(vault):
+    from transcriber.vault import update_stub_participants
+
+    cfg, s, n = _stub_session(vault)
+    n.write_text(n.read_text().replace("tags: [meeting, stub]", "tags: [meeting]"))
+    before = n.read_text()
+    assert update_stub_participants(cfg, s, ["Юлия Михайлова"]) is False
+    assert n.read_text() == before
+
+
+def test_stub_participants_do_nothing_for_a_private_or_empty_case(vault, private_dir):
+    from transcriber.vault import update_stub_participants
+
+    cfg, s, _n = _stub_session(vault)
+    assert update_stub_participants(cfg, s, []) is False
+    s.meta.private = True
+    assert update_stub_participants(cfg, s, ["Юлия Михайлова"]) is False
+
+
+def test_stub_tag_is_seen_even_when_the_thoughts_are_written(vault):
+    from transcriber.vault import has_stub_tag, is_untouched_stub
+
+    cfg, s, n = _stub_session(vault, thoughts="\nмоя мысль\n")
+    text = n.read_text()
+    assert has_stub_tag(text) is True and is_untouched_stub(text) is False
+    assert has_stub_tag(text.replace("tags: [meeting, stub]", "tags: [meeting]")) is False
+    assert has_stub_tag("просто текст без фронт-маттера") is False
+
+
 def test_untouched_stub_is_told_from_one_with_thoughts(vault):
     from transcriber.vault import is_untouched_stub
 

@@ -278,15 +278,17 @@ def run_bench(cfg: Config, bench_id: str, label: str, overrides: dict | None = N
     session_dir = sandbox / "sessions" / bench_id
     try:
         session_dir.mkdir(parents=True)
-        for name in ("meta.json", "mic.pcm", "sys.pcm"):
+        for name in ("meta.json", "mic.pcm", "sys.pcm", "talk.jsonl"):
             if (src / name).exists():
                 shutil.copy2(src / name, session_dir / name)   # эталон только читаем, работаем с копией
         (session_dir / "STOP").touch()
         # песочница поверх --set: перенаправить прогон в рабочий вольт нельзя даже нарочно,
-        # keep_audio — чтобы finalize() не снёс копию эталона посреди прогона
+        # keep_audio — чтобы finalize() не снёс копию эталона посреди прогона, talk_autolearn
+        # выключен — эталон гоняется десятки раз и не должен пополнять библиотеку голосов
         run_cfg = replace(cfg, **(overrides or {}))
         run_cfg = replace(run_cfg, vault_root=sandbox / "vault", sessions_dir=sandbox / "sessions",
-                          private_dir=sandbox / "private", bench_dir=cfg.bench_dir, keep_audio=True)
+                          private_dir=sandbox / "private", bench_dir=cfg.bench_dir, keep_audio=True,
+                          talk_autolearn=False)
 
         m = models or load_models(run_cfg)
         with LogCapture() as captured:

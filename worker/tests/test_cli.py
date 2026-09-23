@@ -307,6 +307,68 @@ def test_refinalize_command_prints_raw_path(vault, tmp_path, capsys, monkeypatch
     assert capsys.readouterr().out.strip().endswith("Local-2026-09-15-1430-Встреча.md")
 
 
+ЮЛЯ = "Юлия Михайлова"
+КОМНАТА = "609.1 Ориентир 1"
+
+TALK_RECORDS = [{"channel": "sys", "start": float(2 * i), "end": float(2 * i) + 1.5,
+                 "text": f"реплика {i}", "speaker": "Speaker 1", "emb": i} for i in range(5)]
+
+
+def _talk_session(sessions: Path, vault: Path | None = None) -> Path:
+    """Сессия без аудио: пять реплик одного голоса и talk.jsonl с плиткой Юлии поверх них."""
+    d = make_session(sessions, title="Встреча")
+    (d / "state.json").write_text(json.dumps({
+        "status": "finalized", "records": TALK_RECORDS, "pending_mic": [],
+        "embeddings": [[1.0, 0.0, 0.0]] * 5, "speaker_of_emb": [0] * 5, "errors": [],
+    }, ensure_ascii=False))
+    (d / "talk.jsonl").write_text("\n".join(json.dumps(s, ensure_ascii=False) for s in [
+        {"t": 0.0, "participants": [{"name": ЮЛЯ, "mic": False, "active": True},
+                                    {"name": КОМНАТА, "mic": True, "active": False}]},
+        {"t": 20.0, "participants": [{"name": ЮЛЯ, "mic": False, "active": False},
+                                     {"name": КОМНАТА, "mic": True, "active": True}]},
+    ]) + "\n", encoding="utf-8")
+    if vault is not None:                      # у записанной сессии MTG-заглушка уже есть
+        from transcriber.session import Session
+        from transcriber.vault import ensure_stub
+
+        s = Session.load(d)
+        ensure_stub(Config(vault_root=vault, sessions_dir=sessions), s)
+        s.save_state()
+    return d
+
+
+def test_refinalize_recomputes_talk_names_from_the_saved_talk_file(vault, tmp_path):
+    """talk.jsonl переживает сессию: имена пересчитываются даже когда аудио уже удалено."""
+    sessions = tmp_path / "sessions"
+    d = _talk_session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions)
+    raw = cli.refinalize(cfg, "2026-09-15-1430")
+
+    state = json.loads((d / "state.json").read_text())
+    assert state["speaker_names"] == {"0": ЮЛЯ}
+    assert [r["talk"] for r in state["records"]] == [ЮЛЯ] * 5       # в state.json их не было вовсе
+    assert [r["speaker"] for r in state["records"]] == [ЮЛЯ] * 5
+    text = raw.read_text()
+    assert f"{ЮЛЯ}: реплика 0" in text
+    assert f"Участники по данным Толка: {ЮЛЯ}, {КОМНАТА}." in text
+
+    prof = VoiceLibrary(cfg.voices_dir).get(ЮЛЯ)
+    assert prof is not None and prof.count == 5 and prof.sources == ["2026-09-15-1430:talk"]
+
+    cli.refinalize(cfg, "2026-09-15-1430")                          # повтор не копит дубли
+    again = VoiceLibrary(cfg.voices_dir).get(ЮЛЯ)
+    assert again.count == 5 and len(again.samples) == 5
+
+
+def test_refinalize_puts_the_talk_participants_into_the_stub(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    _talk_session(sessions, vault)
+    cfg = Config(vault_root=vault, sessions_dir=sessions)
+    cli.refinalize(cfg, "2026-09-15-1430")
+    note = vault / "Memory/30 · Meetings/MTG-2026-09-15 1430 · Встреча.md"
+    assert f"participants: [Владислав, Егор Спирин, {ЮЛЯ}, {КОМНАТА}]" in note.read_text()
+
+
 def _session_with_audio(sessions: Path, vault: Path) -> tuple[Path, Path, Path]:
     """Сессия с сохранённым аудио и устаревшим state.json от прошлого прогона."""
     d = make_session(sessions)
