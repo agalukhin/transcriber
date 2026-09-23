@@ -34,8 +34,11 @@ final class StatusItem {
     }
 
     func setRecording(_ recording: Bool, detail: String?, private isPrivate: Bool = false) {
-        item.button?.title = recording ? "●" : "○"
-        item.button?.contentTintColor = recording ? (isPrivate ? .systemPurple : .systemRed) : nil
+        if recording {
+            setIcon("record.circle.fill", tint: isPrivate ? .systemPurple : .systemRed)
+        } else {
+            setIcon("waveform.circle", tint: nil)
+        }
         let what = isPrivate ? "Идёт приватная запись" : "Идёт запись"
         baseStatus = recording ? what + (detail.map { " · \($0)" } ?? "") : "Ожидание встречи"
         statusLine.title = baseStatus
@@ -55,9 +58,23 @@ final class StatusItem {
     }
 
     func setProblem(_ text: String) {
-        item.button?.title = "!"
-        item.button?.contentTintColor = .systemRed
+        setIcon("exclamationmark.circle.fill", tint: .systemOrange)
         statusLine.title = text
+    }
+
+    /// A glyph in the title is drawn in the label colour, which on a dark or dimmed menu bar (an
+    /// inactive display) is all but invisible. An SF Symbol image is not: as a template macOS
+    /// recolours it for whatever the bar is doing, and the coloured states carry their own palette
+    /// so they read the same everywhere.
+    private func setIcon(_ symbol: String, tint: NSColor?) {
+        var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+        if let tint { config = config.applying(NSImage.SymbolConfiguration(paletteColors: [tint])) }
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = tint == nil
+        item.button?.image = image
+        item.button?.contentTintColor = tint
+        item.button?.title = ""
     }
 
     @objc private func toggleAction() { onToggle?() }
