@@ -15,7 +15,7 @@ from .pcm import PcmReader, read_range
 from .quality import junk_reason, prompt_vocabulary, strip_leak_prefix
 from .session import Rec, Session, State
 from .speakers import OnlineClusterer, absorb_small_clusters, label, recluster
-from .talk import MIN_SHARE, Span, TalkFile, is_bot, is_room, span_share, speaker_for_span
+from .talk import MIN_SHARE, Span, TalkFile, is_bot, is_room, is_shared, span_share, speaker_for_span
 from .vad import Segmenter
 from .vault import ensure_stub, update_stub_participants, write_raw
 from .voices import VoiceLibrary, centroid_of
@@ -135,7 +135,7 @@ def talk_autolearn(cfg: Config, st: State, votes: dict[int, tuple[str, float]], 
         embs = by_cluster.get(cluster, [])
         if len(embs) < TALK_LEARN_MIN_EMB or agreement < TALK_LEARN_AGREE:
             continue
-        if is_room(name, cfg.talk_room_patterns) or is_bot(name, cfg.talk_bot_patterns):
+        if is_room(name, cfg.talk_room_patterns) or is_bot(name, cfg.talk_bot_patterns) or is_shared(name, cfg.talk_shared_names):
             continue                     # такие имена голосование и не выдаёт, но библиотека дороже
         by_name.setdefault(name, []).extend(embs)
     if not by_name:
@@ -177,7 +177,7 @@ def recluster_records(cfg: Config, st: State, library: VoiceLibrary | None = Non
         for r in st.records:
             if r.channel == "sys":
                 r.talk = speaker_for_span(spans, r.start, r.end, MIN_SHARE,
-                                          cfg.talk_room_patterns, cfg.talk_bot_patterns)
+                                          cfg.talk_room_patterns, cfg.talk_bot_patterns, cfg.talk_shared_names)
     votes = {} if private else talk_vote(st)
     names: dict[int, str] = {c: name for c, (name, _agreement) in votes.items()}
     if not private:
@@ -264,7 +264,7 @@ class Pipeline:
         if self.s.meta.private:
             return None
         return speaker_for_span(self.talk.timeline, start, end, MIN_SHARE,
-                                self.cfg.talk_room_patterns, self.cfg.talk_bot_patterns)
+                                self.cfg.talk_room_patterns, self.cfg.talk_bot_patterns, self.cfg.talk_shared_names)
 
     # ---- live -------------------------------------------------------------
 

@@ -6,6 +6,8 @@ public struct TalkParticipant: Equatable {
     public var name: String
     /// `false` when the tile carries the `mute` icon class — the only mic state Толк publishes.
     public var micOn: Bool
+    /// Служебный флаг разбора: метка `active-speaker` без `dominant`. После `parse` всегда false.
+    var recentOnly = false
     /// The tile Толк marks as the one currently speaking (`active-speaker`).
     public var active: Bool
 
@@ -66,7 +68,13 @@ public struct TalkSnapshot: Equatable {
             if let participant = participant(in: subtree[(i + 1)..<j]) { out.append(participant) }
             i = j
         }
-        return TalkSnapshot(participants: out)
+        // Толк держит две ступени метки: `active-speaker dominant` у того, кто говорит прямо сейчас,
+        // и голый `active-speaker` у того, кто говорил только что. Активным считаем dominant;
+        // голая метка идёт в ход, только когда dominant нет ни у кого.
+        if out.contains(where: { $0.active && !$0.recentOnly }) {
+            for i in out.indices where out[i].recentOnly { out[i].active = false }
+        }
+        return TalkSnapshot(participants: out.map { var p = $0; p.recentOnly = false; return p })
     }
 
     /// One tile's rows (everything below the `grid-participant` group) turned into a participant,
@@ -77,9 +85,11 @@ public struct TalkSnapshot: Equatable {
         var nameGroupIndent: Int?
         var micOn = false
         var active = false
+        var dominant = false
         for row in rows {
             let list = classes(of: row.text)
             if list.contains(where: { $0.contains("active-speaker") }) { active = true }
+            if list.contains("dominant") { dominant = true }
             if name == nil, row.text.hasPrefix("AXButton"), list.contains("participant-info-content"),
                let title = capture(titlePattern, in: row.text), !title.isEmpty {
                 name = title
@@ -94,7 +104,9 @@ public struct TalkSnapshot: Equatable {
             }
         }
         guard let resolved = name ?? fallbackName else { return nil }
-        return TalkParticipant(name: resolved, micOn: micOn, active: active)
+        var p = TalkParticipant(name: resolved, micOn: micOn, active: active)
+        p.recentOnly = active && !dominant
+        return p
     }
 
     // MARK: - Lines

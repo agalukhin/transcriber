@@ -120,6 +120,12 @@ def is_room(name: str, patterns: list[str] | None = None) -> bool:
     return _matches(name, ROOM_PATTERNS if patterns is None else patterns)
 
 
+def is_shared(name: str, names: list[str] | None) -> bool:
+    """Общий микрофон по имени плитки (несколько голосов за одним человеком) или сам владелец."""
+    n = name.casefold()
+    return any(x.casefold() in n for x in (names or []) if x.strip())
+
+
 def is_bot(name: str, patterns: list[str] | None = None) -> bool:
     """Плитка бота-саммаризатора: в разговоре не участвует, в списке участников не нужен."""
     return _matches(name, BOT_PATTERNS if patterns is None else patterns)
@@ -169,7 +175,8 @@ def span_share(timeline: list[Span], start: float, end: float, name: str) -> flo
 
 def speaker_for_span(timeline: list[Span], start: float, end: float, min_share: float = MIN_SHARE,
                      room_patterns: list[str] | None = None,
-                     bot_patterns: list[str] | None = None) -> str | None:
+                     bot_patterns: list[str] | None = None,
+                     shared_names: list[str] | None = None) -> str | None:
     """Имя, накрывшее отрезок не меньше чем на ``min_share``, иначе None.
 
     Переговорка и бот имени не дают: такой отрезок остаётся за голосовым кластером.
@@ -183,7 +190,7 @@ def speaker_for_span(timeline: list[Span], start: float, end: float, min_share: 
     name, covered = sorted(cover.items(), key=lambda kv: (-kv[1], kv[0]))[0]
     if covered / total < min_share:
         return None
-    if is_room(name, room_patterns) or is_bot(name, bot_patterns):
+    if is_room(name, room_patterns) or is_bot(name, bot_patterns) or is_shared(name, shared_names):
         return None
     return name
 

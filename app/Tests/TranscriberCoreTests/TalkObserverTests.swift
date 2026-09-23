@@ -214,3 +214,24 @@ private func tempConfig() -> URL {
     #expect(observer.lastSnapshot == nil)
     try? FileManager.default.removeItem(at: root)
 }
+
+
+@Test func dominantBeatsRecentActiveSpeaker() {
+    let dump = """
+    AXGroup class='participants' frame=0,0 10x10
+      AXGroup class='grid-participant _animate' frame=0,0 10x10
+        AXGroup class='active-speaker' frame=0,0 10x10
+        AXGroup class='info-container' frame=0,0 10x10
+          AXButton class='participant-icon mute global-as-button' frame=0,0 10x10
+          AXButton title='Сергей Пацынко' class='participant-info-content global-as-button' frame=0,0 10x10
+      AXGroup class='grid-participant _animate' frame=0,0 10x10
+        AXGroup class='zoomed active-speaker dominant' frame=0,0 10x10
+        AXGroup class='info-container' frame=0,0 10x10
+          AXButton class='participant-icon mute global-as-button' frame=0,0 10x10
+          AXButton title='Александра Казначеева' class='participant-info-content global-as-button' frame=0,0 10x10
+    """
+    let snap = TalkSnapshot.parse(dump)!
+    #expect(snap.participants.map { $0.active } == [false, true])
+    let noDominant = dump.replacingOccurrences(of: "zoomed active-speaker dominant", with: "active-speaker")
+    #expect(TalkSnapshot.parse(noDominant)!.participants.map { $0.active } == [true, true])
+}

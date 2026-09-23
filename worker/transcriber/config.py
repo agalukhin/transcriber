@@ -47,6 +47,7 @@ class Config:
     # Плитки участников из интерфейса Толка (talk.jsonl рядом с дорожками сессии)
     talk_room_patterns: list[str] = field(default_factory=lambda: list(TALK_ROOM_PATTERNS))
     talk_bot_patterns: list[str] = field(default_factory=lambda: list(TALK_BOT_PATTERNS))
+    talk_shared_names: list[str] = field(default_factory=list)   # общие микрофоны и владелец: имён из Толка не получают
     talk_autolearn: bool = True                 # уверенно названный Толком кластер сам идёт в библиотеку голосов
     echo_overlap: float = 0.8
     echo_similarity: float = 0.6

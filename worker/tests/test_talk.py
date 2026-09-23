@@ -162,3 +162,12 @@ def test_talk_file_rereads_only_when_the_file_changed(tmp_path):
     assert f.refresh() is True
     assert [span[2] for span in f.timeline] == [ЮЛЯ, "Егор Спирин"]
     assert f.participants() == [ЮЛЯ, "Егор Спирин"]
+
+
+def test_shared_mic_names_never_become_speakers():
+    from transcriber.talk import is_shared, speaker_for_span
+    tl = [(0.0, 10.0, "Сергей Пацынко"), (10.0, 20.0, "Александра Казначеева")]
+    assert is_shared("Сергей Пацынко", ["сергей пацынко"])
+    assert not is_shared("Александра Казначеева", ["Сергей Пацынко"])
+    assert speaker_for_span(tl, 0.0, 9.0, 0.6, shared_names=["Сергей Пацынко"]) is None
+    assert speaker_for_span(tl, 10.0, 19.0, 0.6, shared_names=["Сергей Пацынко"]) == "Александра Казначеева"
