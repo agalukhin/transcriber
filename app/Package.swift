@@ -7,6 +7,6 @@ let package = Package(
     targets: [
         .target(name: "TranscriberCore", path: "Sources/TranscriberCore"),
         .executableTarget(name: "Transcriber", dependencies: ["TranscriberCore"], path: "Sources/Transcriber"),
-        .testTarget(name: "TranscriberCoreTests", dependencies: ["TranscriberCore"], path: "Tests/TranscriberCoreTests"),
+        .testTarget(name: "TranscriberCoreTests", dependencies: ["TranscriberCore", "Transcriber"], path: "Tests/TranscriberCoreTests"),
     ]
 )
