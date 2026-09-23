@@ -46,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Accessibility reconnaissance of the current session, while one is running. Main thread
     /// only: `render` is the single place it is created and torn down.
     private var recon: AXRecon?
+    /// The Толк grid watcher of the current session — unlike the recon it runs the whole session.
+    /// Main thread only, like `recon`.
+    private var talkObserver: TalkObserver?
+    /// Both of the above are started by one lookup; this is what keeps it to one attempt per
+    /// session even when only one of the two is switched on. Main thread only.
+    private var axWatchersStarted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.info("app launched")
@@ -406,25 +412,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             floating.hide()
             recon?.stop()
             recon = nil
+            talkObserver?.stop()
+            talkObserver = nil
+            axWatchersStarted = false
         case .recording(let dir):
             status.setRecording(true, detail: dir.id, private: controller.currentIsPrivate)
             floating.show(private: controller.currentIsPrivate, title: controller.currentTitle,
                           startedAt: controller.currentStartedAt)
-            startRecon(dir)
+            startAXWatchers(dir)
         }
     }
 
-    /// Reconnaissance over the AX tree of the meeting app for the first minutes of a recording —
-    /// how Толк marks the participant who is speaking is not documented anywhere, so the only way
-    /// to learn it is to watch a real call and write down what moves. Strictly read-only.
+    /// The two read-only watchers over the AX tree of the meeting app, started together because
+    /// they need the same answer to «какое приложение и какой pid» — and that answer costs an
+    /// AppleScript round trip to the browser.
     ///
-    /// Never for a private session: an AX dump of a therapy call is exactly the kind of thing the
-    /// privacy rules exist to prevent. `render` can be called repeatedly for the same session, so
-    /// the guard on `recon` is what keeps it to one run.
-    private func startRecon(_ dir: SessionDir) {
-        guard recon == nil, !controller.currentIsPrivate, let app = controller.currentApp else { return }
-        let config = ReconConfig.load()
-        guard config.enabled, config.seconds > 0 else { return }
+    /// * `AXRecon` — the first minutes of the tree, for figuring out markings we do not know yet.
+    /// * `TalkObserver` — the participant grid for the whole session, into `talk.jsonl`.
+    ///
+    /// Never for a private session: an AX dump — or a list of participants — of a therapy call is
+    /// exactly the kind of thing the privacy rules exist to prevent. `render` can be called
+    /// repeatedly for the same session, so `axWatchersStarted` is what keeps this to one attempt.
+    private func startAXWatchers(_ dir: SessionDir) {
+        guard !axWatchersStarted, !controller.currentIsPrivate, let app = controller.currentApp else { return }
+        let recon = ReconConfig.load()
+        let talk = TalkConfig.load()
+        let wantsRecon = recon.enabled && recon.seconds > 0
+        guard wantsRecon || talk.enabled else { return }
+        axWatchersStarted = true
         let startedAt = controller.currentStartedAt ?? Date()
         // Asking the browser for its tabs is AppleScript, and looking up a pid walks the running
         // apps: neither belongs on the main thread.
@@ -437,22 +452,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 // The session may already be over, or a different one may have started, by the
                 // time the tabs answered.
-                guard self.recon == nil, self.controller.current == dir else { return }
-                let recon = AXRecon(pid: pid, sessionID: dir.id, startedAt: startedAt,
-                                    seconds: config.seconds)
-                self.recon = recon
-                recon.start()
+                guard self.controller.current == dir else { return }
+                if wantsRecon, self.recon == nil {
+                    let watcher = AXRecon(pid: pid, sessionID: dir.id, startedAt: startedAt,
+                                          seconds: recon.seconds)
+                    self.recon = watcher
+                    watcher.start()
+                }
+                if talk.enabled, self.talkObserver == nil {
+                    let observer = TalkObserver(pid: pid, sessionDir: dir, startedAt: startedAt)
+                    self.talkObserver = observer
+                    observer.start()
+                }
             }
         }
     }
 
-    /// Reads the recon block once at launch — which also writes it into the config the first time,
-    /// so there is something to switch off without waiting for a meeting. On `pollQueue`: it is
-    /// file I/O, and the block may have to be spliced in.
+    /// Reads both AX blocks once at launch — which also writes them into the config the first time,
+    /// so there is something to switch off without waiting for a meeting. On `pollQueue`, one after
+    /// the other: it is file I/O into the same file, and the blocks may have to be spliced in.
     private func announceReconConfig() {
         pollQueue.async { [weak self] in
-            let config = ReconConfig.load()
-            self?.log.info("ax recon config: enabled \(config.enabled), \(Int(config.seconds))s")
+            let recon = ReconConfig.load()
+            self?.log.info("ax recon config: enabled \(recon.enabled), \(Int(recon.seconds))s")
+            let talk = TalkConfig.load()
+            self?.log.info("talk observer config: enabled \(talk.enabled)")
         }
     }
 

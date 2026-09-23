@@ -125,6 +125,50 @@ if let i = CommandLine.arguments.firstIndex(of: "--recon-test") {
     exit(0)
 }
 
+/// `Transcriber --talk-test <bundle-prefix> [seconds]` runs the very grid watcher a recording
+/// starts (`TalkObserver`) against a running Толк — desktop app or the browser holding the call —
+/// writing `talk.jsonl` into a throwaway session and printing the last snapshot it read.
+/// Needs the Accessibility grant, so run the installed bundle:
+/// `open -n -a ~/Applications/Transcriber.app --args --talk-test com.google.Chrome 20`.
+if let i = CommandLine.arguments.firstIndex(of: "--talk-test") {
+    let rest = Array(CommandLine.arguments.dropFirst(i + 1))
+    let prefix = rest.first ?? TalkInspector.bundleID
+    let seconds = Double(rest.dropFirst().first ?? "20") ?? 20
+    guard TalkInspector.ensureAccessibility() else {
+        print("talk-test: нет разрешения Accessibility")
+        exit(1)
+    }
+    guard let pid = AXDump.pidOf(bundlePrefix: prefix) else {
+        print("talk-test: приложение с префиксом '\(prefix)' не запущено")
+        exit(1)
+    }
+    let store = SessionStore(root: FileManager.default.temporaryDirectory
+        .appendingPathComponent("transcriber-talk-test"))
+    let dir = try! store.create(app: prefix, title: "talk-test", participants: [])
+    let observer = TalkObserver(pid: pid, sessionDir: dir)
+    observer.start()
+    // The observer owns its own queue; this thread only has to outlive the run.
+    Thread.sleep(forTimeInterval: seconds + TalkObserver.firstSampleDelay + 0.5)
+    observer.stop()
+    Thread.sleep(forTimeInterval: 0.5)
+    let lines = (try? String(contentsOf: observer.url, encoding: .utf8))?
+        .split(separator: "\n").map(String.init) ?? []
+    print("talk-test: \(prefix) pid \(pid) → \(observer.url.path)")
+    print("строк в talk.jsonl: \(lines.count)")
+    if let snapshot = observer.lastSnapshot {
+        print("последний снимок: участников \(snapshot.participants.count), "
+              + "говорит '\(snapshot.activeName ?? "—")'")
+        for p in snapshot.participants {
+            print("  \(p.active ? "▶" : " ") \(p.micOn ? "🎤" : "🔇") \(p.name)")
+        }
+    } else {
+        print("последний снимок: группы участников в дереве не было — звонок открыт не в этой "
+              + "вкладке или встречи нет")
+    }
+    if let last = lines.last { print("последняя строка: \(last)") }
+    exit(0)
+}
+
 /// `Transcriber --devices` prints the current default input and output devices and exits — the
 /// quick way to check what macOS thinks it is recording from and playing to, without a session.
 if CommandLine.arguments.contains("--devices") {
