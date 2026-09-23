@@ -36,6 +36,7 @@ class Rec:
     speaker: str          # "Me" | "Speaker N"
     emb: int | None = None  # index into State.embeddings
     kept: float | None = None  # доля энергии микрофона, оставленная подавителем эха; None — не считали
+    talk: str | None = None    # имя из плиток Толка на этот отрезок; None — Толк молчит или это переговорка
 
     @classmethod
     def from_dict(cls, d: dict) -> "Rec":

@@ -98,6 +98,26 @@ def test_rec_kept_roundtrips_and_is_optional(tmp_path):
     assert s2.state.records[1].kept is None
 
 
+def test_rec_talk_roundtrips_and_is_optional(tmp_path):
+    d = make_session(tmp_path)
+    s = Session.load(d)
+    s.state.records.append(Rec("sys", 0.0, 2.0, "да", "Speaker 1", 0, talk="Юлия Михайлова"))
+    s.state.records.append(Rec("sys", 3.0, 4.0, "ага", "Speaker 1", 1))
+    s.save_state()
+    s2 = Session.load(d)
+    assert s2.state.records[0].talk == "Юлия Михайлова"
+    assert s2.state.records[1].talk is None
+    assert json.loads((d / "state.json").read_text())["records"][0]["talk"] == "Юлия Михайлова"
+
+
+def test_rec_without_talk_in_old_state_file(tmp_path):
+    d = make_session(tmp_path)
+    (d / "state.json").write_text(json.dumps({
+        "records": [{"channel": "sys", "start": 0.0, "end": 1.0, "text": "да", "speaker": "Speaker 1", "emb": 0}],
+    }))
+    assert Session.load(d).state.records[0].talk is None
+
+
 def test_rec_without_kept_in_old_state_file(tmp_path):
     d = make_session(tmp_path)
     (d / "state.json").write_text(json.dumps({

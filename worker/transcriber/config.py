@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from .talk import BOT_PATTERNS as TALK_BOT_PATTERNS, ROOM_PATTERNS as TALK_ROOM_PATTERNS
+
 log = logging.getLogger("transcriber")
 
 # ~/Claude/transcriber; TRANSCRIBER_ROOT lets tests and a second checkout point elsewhere
@@ -42,6 +44,10 @@ class Config:
     voices_dir: Path = field(default_factory=lambda: VOICES_DIR)   # библиотека голосовых профилей, по файлу на человека
     voice_match_similarity: float = 0.45        # ниже — кластер остаётся «Speaker N»: ошибиться именем хуже
     voice_min_samples: int = 3                  # кластер короче — имени не даём, отпечаток ненадёжен
+    # Плитки участников из интерфейса Толка (talk.jsonl рядом с дорожками сессии)
+    talk_room_patterns: list[str] = field(default_factory=lambda: list(TALK_ROOM_PATTERNS))
+    talk_bot_patterns: list[str] = field(default_factory=lambda: list(TALK_BOT_PATTERNS))
+    talk_autolearn: bool = True                 # уверенно названный Толком кластер сам идёт в библиотеку голосов
     echo_overlap: float = 0.8
     echo_similarity: float = 0.6
     echo_strong_similarity: float = 0.8   # дословный повтор — эхо даже при коротком перекрытии
