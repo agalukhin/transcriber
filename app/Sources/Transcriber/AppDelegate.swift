@@ -485,8 +485,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// about, and dumping it would only cost CPU. Off the main thread — it may ask the browser.
     static func reconTarget(app: String) -> String? {
         if app.hasPrefix(TalkInspector.bundleID) { return app }
-        guard browserApps.contains(app) else { return nil }
         let hosts = PrivacyRules.load().workHosts
-        return BrowserTabs.hasWorkMeeting(forBrowser: app, hosts: hosts) ? app : nil
+        // Ручной старт («manual») не знает, где встреча: обходим браузеры и берём тот,
+        // у которого открыта вкладка со звонком в Толке.
+        let candidates = browserApps.contains(app) ? [app] : (app == "manual" ? browserApps : [])
+        return candidates.first { BrowserTabs.hasWorkMeeting(forBrowser: $0, hosts: hosts) }
     }
 }
