@@ -43,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastMicHolders: Set<String>?
     /// Keeps the Core Audio default-device listeners alive for the life of the app.
     private var deviceObserver: Any?
+    /// The Accessibility reconnaissance of the current session, while one is running. Main thread
+    /// only: `render` is the single place it is created and torn down.
+    private var recon: AXRecon?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log.info("app launched")
@@ -74,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         installTermHandler()
         observeAudioDevices()
+        announceReconConfig()
         // .common, not the default mode: an open menu would otherwise freeze the detector.
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer, forMode: .common)
@@ -400,10 +404,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .idle:
             status.setRecording(false, detail: nil)   // also clears a problem glyph or a hint
             floating.hide()
+            recon?.stop()
+            recon = nil
         case .recording(let dir):
             status.setRecording(true, detail: dir.id, private: controller.currentIsPrivate)
             floating.show(private: controller.currentIsPrivate, title: controller.currentTitle,
                           startedAt: controller.currentStartedAt)
+            startRecon(dir)
         }
+    }
+
+    /// Reconnaissance over the AX tree of the meeting app for the first minutes of a recording —
+    /// how Толк marks the participant who is speaking is not documented anywhere, so the only way
+    /// to learn it is to watch a real call and write down what moves. Strictly read-only.
+    ///
+    /// Never for a private session: an AX dump of a therapy call is exactly the kind of thing the
+    /// privacy rules exist to prevent. `render` can be called repeatedly for the same session, so
+    /// the guard on `recon` is what keeps it to one run.
+    private func startRecon(_ dir: SessionDir) {
+        guard recon == nil, !controller.currentIsPrivate, let app = controller.currentApp else { return }
+        let config = ReconConfig.load()
+        guard config.enabled, config.seconds > 0 else { return }
+        let startedAt = controller.currentStartedAt ?? Date()
+        // Asking the browser for its tabs is AppleScript, and looking up a pid walks the running
+        // apps: neither belongs on the main thread.
+        pollQueue.async { [weak self] in
+            guard let self, let target = AppDelegate.reconTarget(app: app) else { return }
+            guard let pid = AXDump.pidOf(bundlePrefix: target) else {
+                self.log.warn("ax recon: no running app with prefix '\(target)'")
+                return
+            }
+            DispatchQueue.main.async {
+                // The session may already be over, or a different one may have started, by the
+                // time the tabs answered.
+                guard self.recon == nil, self.controller.current == dir else { return }
+                let recon = AXRecon(pid: pid, sessionID: dir.id, startedAt: startedAt,
+                                    seconds: config.seconds)
+                self.recon = recon
+                recon.start()
+            }
+        }
+    }
+
+    /// Reads the recon block once at launch — which also writes it into the config the first time,
+    /// so there is something to switch off without waiting for a meeting. On `pollQueue`: it is
+    /// file I/O, and the block may have to be spliced in.
+    private func announceReconConfig() {
+        pollQueue.async { [weak self] in
+            let config = ReconConfig.load()
+            self?.log.info("ax recon config: enabled \(config.enabled), \(Int(config.seconds))s")
+        }
+    }
+
+    /// Which app's tree is worth sampling: the Толк desktop app, or a browser that has a Толк call
+    /// open. Everything else (a Zoom call, a browser on Meet) is not what this reconnaissance is
+    /// about, and dumping it would only cost CPU. Off the main thread — it may ask the browser.
+    static func reconTarget(app: String) -> String? {
+        if app.hasPrefix(TalkInspector.bundleID) { return app }
+        guard browserApps.contains(app) else { return nil }
+        let hosts = PrivacyRules.load().workHosts
+        return BrowserTabs.hasWorkMeeting(forBrowser: app, hosts: hosts) ? app : nil
     }
 }

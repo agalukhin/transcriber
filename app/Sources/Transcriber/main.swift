@@ -97,6 +97,34 @@ if let i = CommandLine.arguments.firstIndex(of: "--ax-dump") {
     exit(0)
 }
 
+/// `Transcriber --recon-test <bundle-prefix> [seconds]` runs the very reconnaissance a recording
+/// starts (`AXRecon`), writing into ~/Library/Logs/transcriber-ax/recon-test-<stamp>/ — the way to
+/// check the change log and the summary against a real Толк call without waiting for a session.
+/// Needs the Accessibility grant, so run the installed bundle.
+if let i = CommandLine.arguments.firstIndex(of: "--recon-test") {
+    let rest = Array(CommandLine.arguments.dropFirst(i + 1))
+    let prefix = rest.first ?? TalkInspector.bundleID
+    let seconds = Double(rest.dropFirst().first ?? "20") ?? 20
+    guard TalkInspector.ensureAccessibility() else {
+        print("recon-test: нет разрешения Accessibility")
+        exit(1)
+    }
+    guard let pid = AXDump.pidOf(bundlePrefix: prefix) else {
+        print("recon-test: приложение с префиксом '\(prefix)' не запущено")
+        exit(1)
+    }
+    let stamp = DateFormatter()
+    stamp.dateFormat = "yyyy-MM-dd-HHmmss"
+    let recon = AXRecon(pid: pid, sessionID: "recon-test-\(stamp.string(from: Date()))", seconds: seconds)
+    recon.start()
+    // The sampler owns its own queue; this thread only has to outlive the run.
+    Thread.sleep(forTimeInterval: seconds + AXRecon.firstSampleDelay + 1)
+    recon.stop()
+    Thread.sleep(forTimeInterval: 0.5)
+    print("recon-test: \(prefix) pid \(pid) → \(recon.dir.path)")
+    exit(0)
+}
+
 /// `Transcriber --devices` prints the current default input and output devices and exits — the
 /// quick way to check what macOS thinks it is recording from and playing to, without a session.
 if CommandLine.arguments.contains("--devices") {

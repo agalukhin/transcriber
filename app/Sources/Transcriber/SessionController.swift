@@ -27,6 +27,10 @@ final class SessionController {
     /// both. A private session keeps no title, exactly as everywhere else.
     private(set) var currentStartedAt: Date?
     private(set) var currentTitle: String?
+    /// Bundle-ID prefix the running session was started for. The AX reconnaissance needs it to
+    /// find the app whose tree to sample, and only the session knows which app the recording
+    /// actually belongs to — `activeApp` in the delegate can already have moved on.
+    private(set) var currentApp: String?
     /// One-shot override from the menu — forces the next session private whatever the schedule
     /// says, then clears itself.
     var forcePrivateNext = false
@@ -126,6 +130,7 @@ final class SessionController {
             currentIsPrivate = isPrivate
             currentStartedAt = now
             currentTitle = isPrivate || info.title.isEmpty ? nil : info.title
+            currentApp = app
             forcePrivateNext = false   // the override is spent only once the session really exists
             state = .recording(dir)
             log.info("session \(dir.id) started (app \(app), title '\(info.title)'\(isPrivate ? ", приватная" : ""))")
@@ -137,6 +142,7 @@ final class SessionController {
             currentIsPrivate = false
             currentStartedAt = nil
             currentTitle = nil
+            currentApp = nil
             state = .idle
             onStateChange?(state)
             onError?("Не удалось начать запись: \(error)")
@@ -155,6 +161,7 @@ final class SessionController {
         currentIsPrivate = false
         currentStartedAt = nil
         currentTitle = nil
+        currentApp = nil
         state = .idle
         log.info("session \(dir.id) stopped; mic \(micSamples) samples")
         verifyCaptureReleased()
