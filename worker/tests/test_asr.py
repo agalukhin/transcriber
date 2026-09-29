@@ -107,3 +107,38 @@ def test_transcriber_survives_segments_without_time_and_quality_fields(monkeypat
 
     t, _ = _transcriber(monkeypatch, {"text": " Текст.", "segments": [{"text": " Текст."}]})
     assert t(np.zeros(16000, dtype="float32")) == [Segment(0.0, 0.0, "Текст.")]
+
+
+def _mlx(monkeypatch):
+    """Подменённый mlx.core: записывает лимит кеша и сбросы, Metal не трогаем."""
+    import importlib
+    import sys
+    import types
+
+    fake = types.SimpleNamespace(limits=[], cleared=0)
+    fake.set_cache_limit = lambda n: fake.limits.append(n) or 0
+    fake.clear_cache = lambda: setattr(fake, "cleared", fake.cleared + 1)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake)
+    monkeypatch.setattr(importlib.import_module("mlx"), "core", fake, raising=False)
+    return fake
+
+
+def test_transcriber_caps_mlx_buffer_cache_and_releases_it(monkeypatch):
+    from transcriber.asr import Transcriber
+
+    _transcriber(monkeypatch, {})            # подменяет mlx_whisper
+    mx = _mlx(monkeypatch)
+    t = Transcriber("model", "ru", [], cache_mb=512)
+    assert mx.limits == [512 * 2 ** 20]
+    t.release()
+    assert mx.cleared == 1
+
+
+def test_transcriber_without_cache_limit_never_touches_mlx(monkeypatch):
+    import sys
+
+    from transcriber.asr import Transcriber
+
+    _transcriber(monkeypatch, {})
+    monkeypatch.setitem(sys.modules, "mlx.core", None)   # импорт упал бы, если бы его попробовали
+    Transcriber("model", "ru", []).release()

@@ -49,7 +49,8 @@ def kept_segments(result: dict) -> list[dict]:
 
 
 class Transcriber:
-    def __init__(self, model_name: str, language: str, hallucinations: list[str], sample_rate: int = 16000):
+    def __init__(self, model_name: str, language: str, hallucinations: list[str], sample_rate: int = 16000,
+                 cache_mb: int | None = None):
         import mlx_whisper
 
         self.mlx_whisper = mlx_whisper
@@ -57,6 +58,20 @@ class Transcriber:
         self.language = language
         self.hallucinations = hallucinations
         self.sample_rate = sample_rate
+        self.mx = None
+        if cache_mb is not None:
+            # MLX не отдаёт системе освобождённые Metal-буферы, а складывает их в кеш «на потом»; потолок
+            # кеша по умолчанию — почти вся память машины. Блоки разной длины буферы не переиспользуют,
+            # и за сутки воркер вырастал до 14 ГБ. Сверх лимита кеш сбрасывается при следующем выделении.
+            import mlx.core as mx
+
+            self.mx = mx
+            mx.set_cache_limit(cache_mb * 2 ** 20)
+
+    def release(self) -> None:
+        """Между встречами: кеш буферов отдаём системе, в памяти остаются только веса модели."""
+        if self.mx is not None:
+            self.mx.clear_cache()
 
     def __call__(self, audio: np.ndarray, prompt: str = "") -> list[Segment]:
         """Блок на 45-90 с → сегменты с временами внутри блока.

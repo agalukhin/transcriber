@@ -14,6 +14,7 @@ class Models:
     asr: Callable[[np.ndarray, str], list[Segment]]
     embed: Callable[[np.ndarray], np.ndarray]
     prob_factory: Callable[[], Callable[[np.ndarray], float]]
+    release: Callable[[], None] = lambda: None   # отдать системе, что можно, пока встреч нет (кеш MLX)
 
 
 def silero_prob_factory(sample_rate: int) -> Callable[[], Callable[[np.ndarray], float]]:
@@ -35,8 +36,10 @@ def load_models(cfg: Config) -> Models:
     from .asr import Transcriber
     from .speakers import Embedder
 
+    asr = Transcriber(cfg.whisper_model, cfg.language, cfg.hallucinations, cfg.sample_rate, cfg.mlx_cache_mb)
     return Models(
-        asr=Transcriber(cfg.whisper_model, cfg.language, cfg.hallucinations, cfg.sample_rate),
+        asr=asr,
         embed=Embedder(cfg.embedding_model, cfg.sample_rate),
         prob_factory=silero_prob_factory(cfg.sample_rate),
+        release=asr.release,
     )

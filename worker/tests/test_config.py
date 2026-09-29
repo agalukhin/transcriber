@@ -104,3 +104,14 @@ def test_shipped_yaml_keeps_private_dir_outside_the_vault():
     data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
     assert "Приватные записи" in data["private_dir"]
     assert data["vault_root"] not in data["private_dir"]
+
+
+def test_mlx_cache_default_and_shipped_yaml_agree(tmp_path):
+    import yaml as _yaml
+
+    from transcriber.config import ROOT
+
+    cfg = load_config(yaml_path=tmp_path / "missing.yaml", glossary_path=tmp_path / "missing.txt")
+    assert cfg.mlx_cache_mb == 2048
+    data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
+    assert data["mlx_cache_mb"] == 2048

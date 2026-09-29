@@ -70,6 +70,8 @@ class Daemon:
                     pipe.finalize()
                     del self.pipes[d]
                     worked = True
+                    if not self.pipes:
+                        self.models.release()    # встреч больше нет — кеш буферов MLX отдаём системе
                 self.failures.pop(d, None)
                 self.retry_after.pop(d, None)
             except Exception:  # noqa: BLE001 — one broken session must not stop the others

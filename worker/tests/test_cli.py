@@ -52,6 +52,22 @@ def test_daemon_once_processes_and_finalizes(vault, tmp_path):
     assert dm.once() is False        # finalized sessions are skipped
 
 
+def test_daemon_releases_models_when_the_last_session_is_finalized(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    d = make_session(sessions)
+    (d / "mic.pcm").write_bytes(to_pcm_bytes(silence(5.5)))
+    (d / "sys.pcm").write_bytes(to_pcm_bytes(np.concatenate([tone(1.0, 880), silence(4.5)])))
+    released = []
+    models = fake_models()
+    models.release = lambda: released.append(True)
+    dm = daemon.Daemon(Config(vault_root=vault, sessions_dir=sessions), models=models)
+    dm.once()
+    assert released == []            # встреча идёт — кеш нужен
+    (d / "STOP").touch()
+    dm.once()
+    assert released == [True]        # последняя встреча закрыта — отдали
+
+
 def write_wav_width(path: Path, audio: np.ndarray, width: int, sr: int = SR):
     a = np.clip(audio, -1, 1)
     if width == 1:

@@ -60,6 +60,7 @@ class Config:
     echo_kept_min_cover: float = 0.8   # ...если она хотя бы настолько накрыта речью динамиков
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM"
+    mlx_cache_mb: int = 2048     # потолок кеша Metal-буферов MLX; без него whisper за сутки съедал всю память (asr.py)
     language: str = "ru"
     hallucinations: list[str] = field(default_factory=list)
     glossary: list[str] = field(default_factory=list)
