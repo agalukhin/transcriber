@@ -4,7 +4,9 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 
+from . import memory
 from .config import Config
 from .models import Models, load_models
 from .pipeline import Pipeline
@@ -17,12 +19,16 @@ FAIL_LIMIT = 5          # столько подряд падений — и се
 BACKOFF_START_S = 5.0
 BACKOFF_MAX_S = 300.0
 DEAD = ("finalized", "failed")
+EXIT_RESTART = 75       # EX_TEMPFAIL: «перезапусти меня» — launchd поднимет при любой политике KeepAlive
 
 
 class Daemon:
-    def __init__(self, cfg: Config, models: Models | None = None):
+    def __init__(self, cfg: Config, models: Models | None = None,
+                 footprint: Callable[[], float] = memory.footprint_mb):
         self.cfg = cfg
         self._models = models
+        self.footprint = footprint
+        self.restart_requested = False
         self.pipes: dict[Path, Pipeline] = {}
         self.failures: dict[Path, int] = {}      # подряд идущие падения по каталогу
         self.retry_after: dict[Path, float] = {}
@@ -36,13 +42,14 @@ class Daemon:
 
     def once(self) -> bool:
         """One pass over all sessions. Returns True if any session did work."""
-        worked = False
+        worked = finalized = False
         if not self.cfg.sessions_dir.exists():
             return False
         self._forget_vanished()
         for d in sorted(p for p in self.cfg.sessions_dir.iterdir() if (p / "meta.json").exists()):
             if self._sleeping(d):
                 continue
+            self._stop_if_abandoned(d)
             if lock_holder(d) is not None:       # сессию взял CLI (retranscribe и т.п.) — не мешаем
                 self.pipes.pop(d, None)
                 continue
@@ -70,13 +77,45 @@ class Daemon:
                     pipe.finalize()
                     del self.pipes[d]
                     worked = True
-                    if not self.pipes:
-                        self.models.release()    # встреч больше нет — кеш буферов MLX отдаём системе
+                    finalized = True
                 self.failures.pop(d, None)
                 self.retry_after.pop(d, None)
             except Exception:  # noqa: BLE001 — one broken session must not stop the others
                 self._note_failure(d)
+        if finalized and not self.pipes:
+            self.models.release()                # встреч больше нет — кеш буферов MLX отдаём системе
+            self._check_idle_footprint()
         return worked
+
+    # ---- память -----------------------------------------------------------
+
+    def _check_idle_footprint(self) -> None:
+        """Встреч нет: если воркер всё равно держит больше бюджета — просим launchd о чистом процессе.
+
+        Кеш MLX ограничен и сбрасывается (asr.py), но за неделю воркер всё равно дорастал до 11 ГБ:
+        копится что-то помимо кеша. Перезапуск между встречами стоит ~10 с загрузки моделей
+        на следующей встрече и снимает рост, откуда бы он ни шёл.
+        """
+        used = self.footprint()
+        log.info("idle memory: footprint %.0f MB, %s", used, memory.mlx_summary())
+        if self.cfg.idle_restart_mb and used > self.cfg.idle_restart_mb:
+            log.warning("idle footprint %.0f MB > %d MB — exiting for a clean restart",
+                        used, self.cfg.idle_restart_mb)
+            self.restart_requested = True
+
+    def _stop_if_abandoned(self, d: Path) -> None:
+        """Запись, чьё аудио давно не растёт, а STOP так и нет, — брошена (приложение упало
+        или захват не стартовал). Без STOP она навсегда остаётся в pipes, и между встречами
+        не срабатывают ни сброс кеша, ни перезапуск."""
+        if not self.cfg.abandoned_after_min or (d / "STOP").exists() or _status_on_disk(d) in DEAD:
+            return
+        files = [d / n for n in ("mic.pcm", "sys.pcm", "meta.json") if (d / n).exists()]
+        last = max((f.stat().st_mtime for f in files), default=0.0)
+        if time.time() - last < self.cfg.abandoned_after_min * 60:
+            return
+        log.warning("session %s: no audio for %d+ min and no STOP — treating as abandoned, finalizing",
+                    d.name, self.cfg.abandoned_after_min)
+        (d / "STOP").touch()
 
     # ---- отказоустойчивость ----------------------------------------------
 
@@ -112,9 +151,10 @@ class Daemon:
 
     def run_forever(self) -> None:
         log.info("worker started, sessions at %s", self.cfg.sessions_dir)
-        while True:
+        while not self.restart_requested:
             worked = self.once()
             time.sleep(0.2 if worked else 1.0)
+        raise SystemExit(EXIT_RESTART)
 
 
 def _status_on_disk(d: Path) -> str:

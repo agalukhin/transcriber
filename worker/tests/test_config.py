@@ -115,3 +115,14 @@ def test_mlx_cache_default_and_shipped_yaml_agree(tmp_path):
     assert cfg.mlx_cache_mb == 2048
     data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
     assert data["mlx_cache_mb"] == 2048
+
+
+def test_memory_guards_default_and_shipped_yaml_agree(tmp_path):
+    import yaml as _yaml
+
+    from transcriber.config import ROOT
+
+    cfg = load_config(yaml_path=tmp_path / "missing.yaml", glossary_path=tmp_path / "missing.txt")
+    data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
+    assert data["idle_restart_mb"] == cfg.idle_restart_mb == 3500
+    assert data["abandoned_after_min"] == cfg.abandoned_after_min == 10

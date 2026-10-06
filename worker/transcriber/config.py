@@ -61,6 +61,8 @@ class Config:
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     embedding_model: str = "pyannote/wespeaker-voxceleb-resnet34-LM"
     mlx_cache_mb: int = 2048     # потолок кеша Metal-буферов MLX; без него whisper за сутки съедал всю память (asr.py)
+    idle_restart_mb: int = 3500  # встреч нет, а воркер держит больше — выходит, launchd поднимает чистый; 0 — выкл.
+    abandoned_after_min: int = 10   # запись без STOP, чьё аудио столько не растёт, — брошена: финализируем
     language: str = "ru"
     hallucinations: list[str] = field(default_factory=list)
     glossary: list[str] = field(default_factory=list)
