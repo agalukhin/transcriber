@@ -85,6 +85,8 @@ class Daemon:
         if finalized and not self.pipes:
             self.models.release()                # встреч больше нет — кеш буферов MLX отдаём системе
             self._check_idle_footprint()
+        elif self.pipes:
+            self._check_busy_footprint()
         return worked
 
     # ---- память -----------------------------------------------------------
@@ -101,6 +103,17 @@ class Daemon:
         if self.cfg.idle_restart_mb and used > self.cfg.idle_restart_mb:
             log.warning("idle footprint %.0f MB > %d MB — exiting for a clean restart",
                         used, self.cfg.idle_restart_mb)
+            self.restart_requested = True
+
+    def _check_busy_footprint(self) -> None:
+        """Посреди встречи whisper течёт на ~5 ГБ в час разговора. Сверх busy_restart_mb выходим:
+        аудио пишет приложение, а новый процесс продолжит сессию с сохранённых смещений."""
+        if not self.cfg.busy_restart_mb:
+            return
+        used = self.footprint()
+        if used > self.cfg.busy_restart_mb:
+            log.warning("footprint %.0f MB > %d MB mid-session (%s) — exiting, sessions resume after restart",
+                        used, self.cfg.busy_restart_mb, memory.mlx_summary())
             self.restart_requested = True
 
     def _stop_if_abandoned(self, d: Path) -> None:

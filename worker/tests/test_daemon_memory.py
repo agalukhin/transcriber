@@ -65,7 +65,7 @@ def test_daemon_does_not_restart_while_another_session_is_live(vault, tmp_path):
 def test_zero_budget_disables_restart(vault, tmp_path):
     sessions = tmp_path / "sessions"
     d = _session(sessions)
-    cfg = Config(vault_root=vault, sessions_dir=sessions, idle_restart_mb=0)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, idle_restart_mb=0, busy_restart_mb=0)
     dm = daemon.Daemon(cfg, models=fake_models(), footprint=lambda: 50000.0)
     dm.once()
     (d / "STOP").touch()
@@ -110,3 +110,22 @@ def test_live_recording_is_not_treated_as_abandoned(vault, tmp_path):
     dm.once()
     assert not (d / "STOP").exists()
     assert _status(d) == "recording"
+
+
+def test_daemon_restarts_mid_session_when_over_the_hard_limit(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    d = _session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, busy_restart_mb=6000)
+    dm = daemon.Daemon(cfg, models=fake_models(), footprint=lambda: 7000.0)
+    dm.once()
+    assert _status(d) == "recording"           # сессию не трогаем — продолжит новый процесс
+    assert dm.restart_requested is True
+
+
+def test_daemon_keeps_working_mid_session_under_the_hard_limit(vault, tmp_path):
+    sessions = tmp_path / "sessions"
+    _session(sessions)
+    cfg = Config(vault_root=vault, sessions_dir=sessions, busy_restart_mb=6000)
+    dm = daemon.Daemon(cfg, models=fake_models(), footprint=lambda: 5000.0)
+    dm.once()
+    assert dm.restart_requested is False

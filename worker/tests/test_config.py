@@ -126,3 +126,4 @@ def test_memory_guards_default_and_shipped_yaml_agree(tmp_path):
     data = _yaml.safe_load((ROOT / "worker" / "config.yaml").read_text())
     assert data["idle_restart_mb"] == cfg.idle_restart_mb == 3500
     assert data["abandoned_after_min"] == cfg.abandoned_after_min == 10
+    assert data["busy_restart_mb"] == cfg.busy_restart_mb == 6000

@@ -23,10 +23,14 @@ class _RUsageInfoV2(ctypes.Structure):
         "ri_diskio_bytesread", "ri_diskio_byteswritten")]
 
 
+_libproc = None
+
+
 def footprint_mb() -> float:
     """Physical footprint процесса в МБ; 0.0, если узнать не вышло (не macOS и т.п.)."""
+    global _libproc
     try:
-        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        libproc = _libproc = _libproc or ctypes.CDLL("/usr/lib/libproc.dylib")
         info = _RUsageInfoV2()
         if libproc.proc_pid_rusage(os.getpid(), _RUSAGE_INFO_V2, ctypes.byref(info)) != 0:
             return 0.0
