@@ -25,7 +25,10 @@ def silero_prob_factory(sample_rate: int) -> Callable[[], Callable[[np.ndarray],
         model = load_silero_vad()
 
         def prob(chunk: np.ndarray) -> float:
-            return float(model(torch.from_numpy(np.ascontiguousarray(chunk, dtype=np.float32)), sample_rate).item())
+            # silero держит состояние между вызовами; с autograd каждый вызов дописывал граф к этому
+            # состоянию — ~21 КБ на 32 мс звука, воркер рос на ~80 МБ за минуту встречи
+            with torch.inference_mode():
+                return float(model(torch.from_numpy(np.ascontiguousarray(chunk, dtype=np.float32)), sample_rate).item())
 
         return prob
 
