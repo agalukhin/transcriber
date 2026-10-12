@@ -16,3 +16,6 @@ bench/
 # spike
 spike/**/.build/
 spike/whisperkit/models/
+
+# выгрузки спайка содержат реальные транскрипты встреч
+spike/whisperkit/out/
