@@ -113,3 +113,61 @@ private let workHosts = ["talk.magnit.ru", "ktalk.ru", "talk.kontur.ru"]
     let noCallTab = [tab("https://mail.google.com/x", "Почта")]
     #expect(BrowserTabs.meetingTabState(in: noCallTab) == .none)
 }
+
+@Test func stoppedBrowsersAreNotQueried() {
+    for bundleID in ["com.google.Chrome", "com.apple.Safari", "com.microsoft.edgemac"] {
+        var scriptCalls = 0
+        let tabs = BrowserTabs.tabs(ofBrowser: bundleID, runningPID: { _ in nil }, runScript: { _, _ in
+            scriptCalls += 1
+            return "Синк — Толк\thttps://talk.magnit.ru/room1\n"
+        })
+        #expect(tabs.isEmpty)
+        #expect(scriptCalls == 0)
+    }
+}
+
+@Test func runningBrowsersStillReturnTheirTabs() {
+    var scriptCalls = 0
+    let tabs = BrowserTabs.tabs(ofBrowser: "com.google.Chrome", runningPID: { $0 == "com.google.Chrome" ? 1234 : nil }, runScript: { _, pid in
+        #expect(pid == 1234)
+        scriptCalls += 1
+        return "Синк — Толк\thttps://talk.magnit.ru/room1\n"
+    })
+    #expect(tabs == [BrowserTab(title: "Синк — Толк", url: "https://talk.magnit.ru/room1")])
+    #expect(scriptCalls == 1)
+}
+
+@Test func unsupportedBrowsersAreNotQueried() {
+    var scriptCalls = 0
+    let tabs = BrowserTabs.tabs(ofBrowser: "com.example.nope", runningPID: { _ in 1234 }, runScript: { _, pid in
+        scriptCalls += 1
+        return "Синк — Толк\thttps://talk.magnit.ru/room1\n"
+    })
+    #expect(tabs.isEmpty)
+    #expect(scriptCalls == 0)
+}
+
+@Test func browserScriptFailureYieldsNoTabs() {
+    #expect(BrowserTabs.tabs(ofBrowser: "com.apple.Safari", runningPID: { _ in 1234 }, runScript: { _, pid in nil }).isEmpty)
+}
+
+
+@Test func browserExitingDuringLookupIsNotRetried() {
+    var requests = 0
+    let tabs = BrowserTabs.tabs(ofBrowser: "com.apple.Safari", runningPID: { _ in 1234 }, runScript: { _, pid in
+        #expect(pid == 1234)
+        requests += 1
+        return nil // The captured process exited; do not look up a new target or launch one.
+    })
+    #expect(tabs.isEmpty)
+    #expect(requests == 1)
+}
+
+@Test func scriptTargetingAnExitedProcessFailsWithoutLaunchingAnApplication() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+    try process.run()
+    let pid = process.processIdentifier
+    process.waitUntilExit()
+    #expect(BrowserTabs.executeScript("return name", forPID: pid, browser: "com.example.exited") == nil)
+}

@@ -1,3 +1,6 @@
+import AppKit
+import Carbon
+import OSAKit
 import Foundation
 
 public struct BrowserTab: Equatable {
@@ -70,23 +73,46 @@ public enum BrowserTabs {
     /// Every open tab of a browser, via AppleScript. `[]` on any failure — a missing Automation
     /// permission, a browser that is not running, an unknown bundle ID.
     public static func tabs(ofBrowser bundleID: String) -> [BrowserTab] {
+        tabs(ofBrowser: bundleID,
+             runningPID: { bundleID in
+                 NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                     .first(where: { !$0.isTerminated })?.processIdentifier
+             },
+             runScript: { source, pid in executeScript(source, forPID: pid, browser: bundleID) })
+    }
+
+    /// Keeps the OS queries at the boundary so tab lookup can be tested without opening browsers.
+    static func tabs(ofBrowser bundleID: String, runningPID: (String) -> pid_t?,
+                     runScript: (String, pid_t) -> String?) -> [BrowserTab] {
         guard let source = scriptSource(for: bundleID) else {
             Log.shared.warn("browser tabs: unknown browser \(bundleID)")
             return []
         }
-        guard let script = NSAppleScript(source: source) else {
-            Log.shared.warn("browser tabs: script did not compile for \(bundleID)")
-            return []
-        }
+        guard let pid = runningPID(bundleID), pid > 0 else { return [] }
+        return parse(runScript(source, pid) ?? "")
+    }
+
+    /// Address the captured process, never the application name: if it exits while we compile or
+    /// execute, the request fails instead of resolving the bundle again and launching a browser.
+    static func executeScript(_ source: String, forPID pid: pid_t, browser bundleID: String) -> String? {
+        guard pid > 0, let language = OSALanguage(forName: "AppleScript") else { return nil }
+        let instance = OSALanguageInstance(language: language)
+        // AppleScript accepts a process serial number rather than a kernel PID as its default
+        // target. Coercion fails for an exited process. Use the status-returning API: OSAKit's
+        // defaultTarget setter raises an Objective-C exception when its target is unavailable.
+        guard let target = NSAppleEventDescriptor(processIdentifier: pid)
+            .coerce(toDescriptorType: typeProcessSerialNumber),
+              OSASetDefaultTarget(instance.componentInstance, target.aeDesc) == noErr else { return nil }
+        let script = OSAScript(source: source, from: nil, languageInstance: instance, using: [])
         var error: NSDictionary?
         let result = script.executeAndReturnError(&error)
         if let error {
-            let number = error["NSAppleScriptErrorNumber"] ?? "?"
-            let message = error["NSAppleScriptErrorMessage"] ?? ""
+            let number = error[OSAScriptErrorNumber] ?? "?"
+            let message = error[OSAScriptErrorMessage] ?? ""
             Log.shared.warn("browser tabs: \(bundleID) script failed (\(number)): \(message)")
-            return []
+            return nil
         }
-        return parse(result.stringValue ?? "")
+        return result?.stringValue
     }
 
     /// Title and participants for a call open in `bundleID`, or nil when no tab looks like a call,
@@ -139,28 +165,26 @@ public enum BrowserTabs {
     /// are wrapped in `try`: Safari counts non-browser windows (preferences, downloads) among its
     /// `windows`, and asking those for tabs raises.
     private static func scriptSource(for bundleID: String) -> String? {
-        let appName: String
         let titleProperty: String
         switch bundleID {
-        case "com.google.Chrome": appName = "Google Chrome"; titleProperty = "title of t"
-        case "com.microsoft.edgemac": appName = "Microsoft Edge"; titleProperty = "title of t"
-        case "com.apple.Safari": appName = "Safari"; titleProperty = "name of t"
+        case "com.google.Chrome", "com.microsoft.edgemac": titleProperty = "title of t"
+        case "com.apple.Safari": titleProperty = "name of t"
         default: return nil
         }
+        // OSAKit supplies terminology and sends events through the PID-bound default target.
+        // A named `tell application` here would reintroduce implicit browser launches.
         return """
-        tell application "\(appName)"
-            set out to ""
-            repeat with w in windows
-                try
-                    repeat with t in tabs of w
-                        try
-                            set out to out & (\(titleProperty)) & "\\t" & (URL of t) & "\\n"
-                        end try
-                    end repeat
-                end try
-            end repeat
-            return out
-        end tell
+        set out to ""
+        repeat with w in windows
+            try
+                repeat with t in tabs of w
+                    try
+                        set out to out & (\(titleProperty)) & "\\t" & (URL of t) & "\\n"
+                    end try
+                end repeat
+            end try
+        end repeat
+        return out
         """
     }
 
